@@ -1,10 +1,17 @@
 package tests
 
+import "errors"
+
 type MockWal struct {
-	Writes []string
+	Writes       []string
+	FailWrite    bool
+	FailTruncate bool
 }
 
 func (m *MockWal) WriteToWal(actionString string) (int, error) {
+	if m.FailWrite {
+		return 0, errors.New("wal write failed")
+	}
 	m.Writes = append(m.Writes, actionString)
 	return len(actionString), nil
 }
@@ -36,6 +43,9 @@ func (m *MockWal) SyncWal() error {
 }
 
 func (m *MockWal) TruncateWal() error {
+	if m.FailTruncate {
+		return errors.New("wal truncate failed")
+	}
 	m.Writes = nil
 	return nil
 }
