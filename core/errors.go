@@ -16,6 +16,11 @@ var (
 	WalFailedToCloseError    = errors.New("wal failed to close")
 	WalFailedToSyncError     = errors.New("wal failed to sync")
 	WalFailedToTruncateError = errors.New("wal failed to truncate")
+
+	ErrInvalidSnapshotMagic   = errors.New("invalid snapshot magic number")
+	ErrInvalidSnapshotVersion = errors.New("unsupported snapshot version")
+	ErrSnapshotWriteFailed    = errors.New("failed to write snapshot")
+	ErrSnapshotReadFailed     = errors.New("failed to read snapshot")
 )
 
 type KeyError struct {
@@ -41,5 +46,21 @@ func (e WalError) Error() string {
 }
 
 func (e WalError) Unwrap() error {
+	return e.Err
+}
+
+type SnapshotError struct {
+	Path string
+	Err  error
+}
+
+func (e SnapshotError) Error() string {
+	if e.Path != "" {
+		return fmt.Sprintf("snapshot error (%s): %v", e.Path, e.Err)
+	}
+	return fmt.Sprintf("snapshot error: %v", e.Err)
+}
+
+func (e SnapshotError) Unwrap() error {
 	return e.Err
 }
