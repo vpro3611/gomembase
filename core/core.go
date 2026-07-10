@@ -2,7 +2,9 @@ package core
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -143,6 +145,46 @@ func (s *Storage) CleanupExpired() {
 		}
 		s.deleteNoLock(entry.Key)
 	}
+}
+
+func (s *Storage) LoadFromSnapshot(snap Snapshot) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	data, err := snap.Load()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file or directory") {
+			return nil
+		}
+		return err
+	}
+
+	for k, v := range data {
+		if v.Metadata.IsExpired() {
+			continue
+		}
+		s.Storage[k] = v
+		if v.Metadata.ExpiresAt != nil {
+			entry := &ExpirationEntry{
+				Key:       k,
+				ExpiresAt: *v.Metadata.ExpiresAt,
+			}
+			heap.Push(&s.Expirations, entry)
+			s.ExpirationMap[k] = entry
+		}
+	}
+	return nil
+}
+
+func (s *Storage) SaveSnapshot(snap Snapshot) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if err := snap.Save(s.Storage); err != nil {
+		return err
+	}
+
+	return s.Wal.TruncateWal()
 }
 
 func (s *Storage) Load() error {
