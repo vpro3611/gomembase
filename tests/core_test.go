@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"github.com/vpro3611/gomembase.git/core"
+	"os"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestStorage_BasicOperations(t *testing.T) {
-	s := core.NewStorage()
+	s := core.NewStorage(&MockWal{})
 	key := "test_key"
 	val := []byte("test_value")
 
@@ -50,7 +51,7 @@ func TestStorage_BasicOperations(t *testing.T) {
 }
 
 func TestStorage_TTLAndExpiration(t *testing.T) {
-	s := core.NewStorage()
+	s := core.NewStorage(&MockWal{})
 	key := "ttl_key"
 	val := []byte("ttl_value")
 
@@ -87,7 +88,7 @@ func TestStorage_TTLAndExpiration(t *testing.T) {
 }
 
 func TestStorage_Concurrency(t *testing.T) {
-	s := core.NewStorage()
+	s := core.NewStorage(&MockWal{})
 	const workers = 50
 	const ops = 100
 	var wg sync.WaitGroup
@@ -123,7 +124,7 @@ func TestStorage_Concurrency(t *testing.T) {
 }
 
 func TestStorage_OverwriteAndHeapUpdate(t *testing.T) {
-	s := core.NewStorage()
+	s := core.NewStorage(&MockWal{})
 	key := "update_key"
 
 	// Set with long TTL
@@ -140,9 +141,162 @@ func TestStorage_OverwriteAndHeapUpdate(t *testing.T) {
 }
 
 func TestStorage_DeleteNonExistent(t *testing.T) {
-	s := core.NewStorage()
+	s := core.NewStorage(&MockWal{})
 	err := s.Delete("non_existent")
 	if err != nil {
 		t.Errorf("Delete on non-existent key should not return error, got %v", err)
+	}
+}
+
+func TestStorage_WALRecovery(t *testing.T) {
+	mockWal := &MockWal{}
+	s1 := core.NewStorage(mockWal)
+
+	// 1. Setup initial state
+	s1.SetWithTTL("key1", []byte("val1"), 10*time.Second)
+	s1.Set("key2", []byte("val2"), core.PayloadMetadata{CreatedAt: time.Now()})
+	s1.Delete("key1")
+	s1.Set("key3", []byte("val3"), core.PayloadMetadata{CreatedAt: time.Now()})
+
+	// 2. Simulate new storage instance with the same WAL
+	s2 := core.NewStorage(mockWal)
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// 3. Verify state
+	if s2.Exists("key1") {
+		t.Errorf("key1 should not exist (was deleted)")
+	}
+	v2, err := s2.Get("key2")
+	if err != nil || string(v2) != "val2" {
+		t.Errorf("key2 recovery failed: got %s, err %v", string(v2), err)
+	}
+	v3, err := s2.Get("key3")
+	if err != nil || string(v3) != "val3" {
+		t.Errorf("key3 recovery failed: got %s, err %v", string(v3), err)
+	}
+}
+
+func TestStorage_WALRecovery_EdgeCases(t *testing.T) {
+	mockWal := &MockWal{}
+	_ = core.NewStorage(mockWal) // Just to ensure storage initialization if needed
+
+	// 1. Malformed entries
+	mockWal.WriteToWal("INVALID_LINE\n")
+	mockWal.WriteToWal("SET|only_two_parts\n")
+	mockWal.WriteToWal("SET|key|val|INVALID_DATE\n")
+
+	// 2. Expired entry
+	past := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	mockWal.WriteToWal(fmt.Sprintf("SET|expired|val|%s\n", past))
+
+	// 3. Valid entry
+	mockWal.WriteToWal("SET|valid|val|PERSISTENT\n")
+
+	s2 := core.NewStorage(mockWal)
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if s2.Exists("expired") {
+		t.Errorf("expired key should not have been loaded")
+	}
+	if !s2.Exists("valid") {
+		t.Errorf("valid key should have been loaded")
+	}
+}
+
+func TestStorage_RealWALRecovery(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "wal_test")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+	tempFile.Close()
+
+	wal, err := core.NewWal(tempFile.Name())
+	if err != nil {
+		t.Fatalf("failed to create WAL: %v", err)
+	}
+	defer wal.CloseWal()
+
+	s1 := core.NewStorage(wal)
+	s1.Set("k1", []byte("v1"), core.NewPayloadMetadata(time.Now(), nil))
+	s1.SetWithTTL("k2", []byte("v2"), 1*time.Hour)
+	s1.Delete("k1")
+
+	// Create new storage with same WAL file
+	wal2, err := core.NewWal(tempFile.Name())
+	if err != nil {
+		t.Fatalf("failed to reopen WAL: %v", err)
+	}
+	defer wal2.CloseWal()
+
+	s2 := core.NewStorage(wal2)
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if s2.Exists("k1") {
+		t.Errorf("k1 should be deleted")
+	}
+	v2, err := s2.Get("k2")
+	if err != nil || string(v2) != "v2" {
+		t.Errorf("k2 recovery failed: %v", err)
+	}
+}
+
+func TestWal_AppendAndSeekBehavior(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "append_test")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+	tempFile.Close()
+
+	// 1. Open with O_APPEND
+	wal, err := core.NewWal(tempFile.Name())
+	if err != nil {
+		t.Fatalf("failed to create WAL: %v", err)
+	}
+
+	// 2. Write something
+	_, _ = wal.WriteToWal("LINE1\n")
+	_, _ = wal.WriteToWal("LINE2\n")
+
+	// 3. Test Recovery (Seek(0,0) and Read)
+	var lines []string
+	err = wal.RecoverFromWal(func(line string) error {
+		lines = append(lines, line)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RecoverFromWal failed: %v", err)
+	}
+
+	if len(lines) != 2 || lines[0] != "LINE1" || lines[1] != "LINE2" {
+		t.Errorf("Unexpected lines after recovery: %v", lines)
+	}
+
+	// 4. Write after recovery - should STILL append even if we Seeked
+	_, _ = wal.WriteToWal("LINE3\n")
+
+	wal.CloseWal()
+
+	// 5. Re-open and check all 3 lines
+	wal2, _ := core.NewWal(tempFile.Name())
+	defer wal2.CloseWal()
+	var finalLines []string
+	_ = wal2.RecoverFromWal(func(line string) error {
+		finalLines = append(finalLines, line)
+		return nil
+	})
+
+	if len(finalLines) != 3 {
+		t.Errorf("Expected 3 lines, got %d: %v", len(finalLines), finalLines)
+	}
+	if finalLines[2] != "LINE3" {
+		t.Errorf("Line 3 should be LINE3, got %s", finalLines[2])
 	}
 }
