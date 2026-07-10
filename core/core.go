@@ -2,6 +2,8 @@ package core
 
 import (
 	"container/heap"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,17 +15,20 @@ type StorageInterface interface {
 	Delete(key string) error
 	Exists(key string) bool
 	CleanupExpired() // Cleanup expired entries
+	Load() error     // Load from WAL
 }
 
 type Storage struct {
+	Wal           WalInterface
 	Storage       map[string]Payload
 	Expirations   ExpirationHeap
 	ExpirationMap map[string]*ExpirationEntry
 	mutex         sync.RWMutex
 }
 
-func NewStorage() *Storage {
+func NewStorage(wal WalInterface) *Storage {
 	return &Storage{
+		Wal:           wal,
 		Storage:       make(map[string]Payload),
 		Expirations:   make(ExpirationHeap, 0),
 		ExpirationMap: make(map[string]*ExpirationEntry),
@@ -54,7 +59,14 @@ func (s *Storage) Set(key string, value []byte, metadata PayloadMetadata) error 
 		heap.Push(&s.Expirations, entry)
 		s.ExpirationMap[key] = entry
 	}
-
+	expiresStr := "PERSISTENT"
+	if metadata.ExpiresAt != nil {
+		expiresStr = metadata.ExpiresAt.Format(time.RFC3339)
+	}
+	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, string(value), expiresStr)
+	if _, err := s.Wal.WriteToWal(walEntry); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -75,7 +87,7 @@ func (s *Storage) Get(key string) ([]byte, error) {
 
 	if payload.Metadata.IsExpired() {
 		s.mutex.RUnlock()
-		s.Delete(key)
+		_ = s.Delete(key)
 		return nil, KeyError{Key: key, Err: KeyExpiredError}
 	}
 	defer s.mutex.RUnlock()
@@ -85,6 +97,11 @@ func (s *Storage) Get(key string) ([]byte, error) {
 func (s *Storage) Delete(key string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	if _, err := s.Wal.WriteToWal("DELETE|" + key + "\n"); err != nil {
+		return err
+	}
+
 	s.deleteNoLock(key)
 	return nil
 }
@@ -107,7 +124,7 @@ func (s *Storage) Exists(key string) bool {
 
 	if payload.Metadata.IsExpired() {
 		s.mutex.RUnlock()
-		s.Delete(key)
+		_ = s.Delete(key)
 		return false
 	}
 	s.mutex.RUnlock()
@@ -126,4 +143,57 @@ func (s *Storage) CleanupExpired() {
 		}
 		s.deleteNoLock(entry.Key)
 	}
+}
+
+func (s *Storage) Load() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	return s.Wal.RecoverFromWal(func(line string) error {
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			return nil
+		}
+
+		action := parts[0]
+		key := parts[1]
+
+		switch action {
+		case "DELETE":
+			s.deleteNoLock(key)
+		case "SET":
+			if len(parts) < 4 {
+				return nil
+			}
+			value := []byte(parts[2])
+			expiresStr := parts[3]
+
+			var expiresAt *time.Time
+			if expiresStr != "PERSISTENT" {
+				t, err := time.Parse(time.RFC3339, expiresStr)
+				if err != nil {
+					return nil
+				}
+				if t.Before(time.Now()) {
+					return nil
+				}
+				expiresAt = &t
+			}
+
+			s.Storage[key] = Payload{
+				Value: value,
+				Metadata: PayloadMetadata{
+					CreatedAt: time.Now(),
+					ExpiresAt: expiresAt,
+				},
+			}
+
+			if expiresAt != nil {
+				entry := &ExpirationEntry{Key: key, ExpiresAt: *expiresAt}
+				heap.Push(&s.Expirations, entry)
+				s.ExpirationMap[key] = entry
+			}
+		}
+		return nil
+	})
 }
