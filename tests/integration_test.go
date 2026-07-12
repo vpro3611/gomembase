@@ -67,3 +67,39 @@ func TestSnapshot_WalIntegration(t *testing.T) {
 		t.Errorf("k3 value mismatch: got %s", string(v3))
 	}
 }
+
+func TestWal_BinaryData(t *testing.T) {
+	walPath := "test_binary.wal"
+	defer os.Remove(walPath)
+
+	w, _ := wal.NewWal(walPath)
+	s := storage.NewStorage(w)
+
+	// Binary data with delimiters and newlines
+	key := "binary_key"
+	val := []byte("value|with|delimiters\nand\nnewlines")
+
+	if err := s.Set(key, val, storage.NewPayloadMetadata(time.Now(), nil)); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	// Close and recover
+	w.CloseWal()
+
+	w2, _ := wal.NewWal(walPath)
+	defer w2.CloseWal()
+	s2 := storage.NewStorage(w2)
+
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	got, err := s2.Get(key)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	if !bytes.Equal(got, val) {
+		t.Errorf("got %q, want %q", string(got), string(val))
+	}
+}
