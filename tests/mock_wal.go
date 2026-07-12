@@ -3,16 +3,28 @@ package tests
 import "errors"
 
 type MockWal struct {
-	Writes       []string
-	FailWrite    bool
-	FailTruncate bool
+	writes       []string
+	failWrite    bool
+	failTruncate bool
+}
+
+func (m *MockWal) Writes() []string {
+	return m.writes
+}
+
+func (m *MockWal) SetFailWrite(b bool) {
+	m.failWrite = b
+}
+
+func (m *MockWal) SetFailTruncate(b bool) {
+	m.failTruncate = b
 }
 
 func (m *MockWal) WriteToWal(actionString string) (int, error) {
-	if m.FailWrite {
+	if m.failWrite {
 		return 0, errors.New("wal write failed")
 	}
-	m.Writes = append(m.Writes, actionString)
+	m.writes = append(m.writes, actionString)
 	return len(actionString), nil
 }
 
@@ -21,7 +33,7 @@ func (m *MockWal) ReadFromWal(buffer []byte) (int, error) {
 }
 
 func (m *MockWal) RecoverFromWal(applyFunc func(line string) error) error {
-	for _, line := range m.Writes {
+	for _, line := range m.writes {
 		// Remove trailing newline if present, as bufio.Scanner does
 		trimmed := line
 		if len(line) > 0 && line[len(line)-1] == '\n' {
@@ -43,9 +55,9 @@ func (m *MockWal) SyncWal() error {
 }
 
 func (m *MockWal) TruncateWal() error {
-	if m.FailTruncate {
+	if m.failTruncate {
 		return errors.New("wal truncate failed")
 	}
-	m.Writes = nil
+	m.writes = nil
 	return nil
 }

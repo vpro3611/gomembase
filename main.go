@@ -1,33 +1,35 @@
 package main
 
 import (
-	"github.com/vpro3611/gomembase.git/core"
+	"github.com/vpro3611/gomembase.git/pkg/snapshot"
+	"github.com/vpro3611/gomembase.git/pkg/storage"
+	"github.com/vpro3611/gomembase.git/pkg/wal"
 	"time"
 )
 
 func main() {
-	wal, walErr := core.NewWal("test.wal")
+	w, walErr := wal.NewWal("test.wal")
 	if walErr != nil {
 		panic(walErr)
 	}
 
-	defer func(wal *core.Wal) {
-		err := wal.CloseWal()
+	defer func(w *wal.Wal) {
+		err := w.CloseWal()
 		if err != nil {
 			panic(err)
 		}
-	}(wal)
+	}(w)
 
-	storage := core.NewStorage(wal)
-	snapshot := core.NewSnapshot("test.rdb")
+	s := storage.NewStorage(w)
+	snap := snapshot.NewSnapshot("test.rdb")
 
 	// 1. Load from snapshot first
-	if err := storage.LoadFromSnapshot(snapshot); err != nil {
+	if err := s.LoadFromSnapshot(&snap); err != nil {
 		panic(err)
 	}
 
 	// 2. Load from WAL later than snapshot
-	if err := storage.Load(); err != nil {
+	if err := s.Load(); err != nil {
 		panic(err)
 	}
 
@@ -36,7 +38,7 @@ func main() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			storage.CleanupExpired()
+			s.CleanupExpired()
 		}
 	}()
 
@@ -45,7 +47,7 @@ func main() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := storage.SaveSnapshot(snapshot); err != nil {
+			if err := s.SaveSnapshot(&snap); err != nil {
 				// Log error instead of panicking in goroutine
 				println("Snapshot save failed:", err.Error())
 			}

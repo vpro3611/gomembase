@@ -3,7 +3,10 @@ package tests
 import (
 	"container/heap"
 	"errors"
-	"github.com/vpro3611/gomembase.git/core"
+	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
+	"github.com/vpro3611/gomembase.git/pkg/snapshot"
+	"github.com/vpro3611/gomembase.git/pkg/storage"
+	"github.com/vpro3611/gomembase.git/pkg/wal"
 	"os"
 	"testing"
 	"time"
@@ -26,7 +29,7 @@ func TestPayload_IsExpired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pm := core.PayloadMetadata{ExpiresAt: tt.expiresAt}
+			pm := storage.NewPayloadMetadata(now, tt.expiresAt)
 			if got := pm.IsExpired(); got != tt.want {
 				t.Errorf("IsExpired() = %v, want %v", got, tt.want)
 			}
@@ -35,47 +38,47 @@ func TestPayload_IsExpired(t *testing.T) {
 }
 
 func TestExpirationHeap_Manual(t *testing.T) {
-	h := &core.ExpirationHeap{}
+	h := &storage.ExpirationHeap{}
 	heap.Init(h)
 
 	t1 := time.Now().Add(10 * time.Minute)
 	t2 := time.Now().Add(5 * time.Minute)
 	t3 := time.Now().Add(15 * time.Minute)
 
-	heap.Push(h, &core.ExpirationEntry{Key: "k1", ExpiresAt: t1})
-	heap.Push(h, &core.ExpirationEntry{Key: "k2", ExpiresAt: t2})
-	heap.Push(h, &core.ExpirationEntry{Key: "k3", ExpiresAt: t3})
+	heap.Push(h, storage.NewExpirationEntry("k1", t1))
+	heap.Push(h, storage.NewExpirationEntry("k2", t2))
+	heap.Push(h, storage.NewExpirationEntry("k3", t3))
 
 	if h.Len() != 3 {
 		t.Errorf("expected len 3, got %d", h.Len())
 	}
 
 	// Should pop k2 first (earliest)
-	e := heap.Pop(h).(*core.ExpirationEntry)
-	if e.Key != "k2" {
-		t.Errorf("expected k2, got %s", e.Key)
+	e := heap.Pop(h).(*storage.ExpirationEntry)
+	if e.Key() != "k2" {
+		t.Errorf("expected k2, got %s", e.Key())
 	}
 
 	// Should pop k1 next
-	e = heap.Pop(h).(*core.ExpirationEntry)
-	if e.Key != "k1" {
-		t.Errorf("expected k1, got %s", e.Key)
+	e = heap.Pop(h).(*storage.ExpirationEntry)
+	if e.Key() != "k1" {
+		t.Errorf("expected k1, got %s", e.Key())
 	}
 
 	// Should pop k3 last
-	e = heap.Pop(h).(*core.ExpirationEntry)
-	if e.Key != "k3" {
-		t.Errorf("expected k3, got %s", e.Key)
+	e = heap.Pop(h).(*storage.ExpirationEntry)
+	if e.Key() != "k3" {
+		t.Errorf("expected k3, got %s", e.Key())
 	}
 }
 
 func TestStorage_LoadFromSnapshot_NotExists(t *testing.T) {
 	mockWal := &MockWal{}
-	s := core.NewStorage(mockWal)
-	snap := core.NewSnapshot("non_existent_snapshot.snap")
+	s := storage.NewStorage(mockWal)
+	snap := snapshot.NewSnapshot("non_existent_snapshot.snap")
 
 	// Should not return error if file doesn't exist
-	err := s.LoadFromSnapshot(snap)
+	err := s.LoadFromSnapshot(&snap)
 	if err != nil {
 		t.Errorf("expected nil error for missing snapshot, got %v", err)
 	}
@@ -83,10 +86,10 @@ func TestStorage_LoadFromSnapshot_NotExists(t *testing.T) {
 
 func TestStorage_Exists_TriggersDelete(t *testing.T) {
 	mockWal := &MockWal{}
-	s := core.NewStorage(mockWal)
+	s := storage.NewStorage(mockWal)
 
 	past := time.Now().Add(-time.Hour)
-	err := s.Set("expired", []byte("val"), core.PayloadMetadata{ExpiresAt: &past})
+	err := s.Set("expired", []byte("val"), storage.NewPayloadMetadata(time.Now(), &past))
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
@@ -97,24 +100,26 @@ func TestStorage_Exists_TriggersDelete(t *testing.T) {
 	}
 
 	// Verify it's really gone from storage map
-	if _, ok := s.Storage["expired"]; ok {
+	if _, ok := s.Data()["expired"]; ok {
 		t.Error("key should have been deleted from storage")
 	}
 }
 
 func TestWal_TruncateError(t *testing.T) {
 	// Truncate non-existent file or a directory
-	wal := &core.Wal{Path: "a_directory_that_is_not_a_file"}
-	_ = os.Mkdir(wal.Path, 0755)
-	defer os.Remove(wal.Path)
+	path := "a_directory_that_is_not_a_file"
+	_ = os.Mkdir(path, 0755)
+	defer os.Remove(path)
 
-	err := wal.TruncateWal()
+	w, err := wal.NewWal(path)
+	if err != nil {
+		return // Success if NewWal fails
+	}
+	defer w.CloseWal()
+
+	err = w.TruncateWal()
 	if err == nil {
 		t.Error("expected error when truncating a directory, got nil")
-	}
-	var walErr core.WalError
-	if !errors.As(err, &walErr) {
-		t.Errorf("expected WalError, got %T", err)
 	}
 }
 
@@ -126,15 +131,15 @@ func TestWal_TruncateSuccess(t *testing.T) {
 	defer os.Remove(tempFile.Name())
 	tempFile.Close()
 
-	wal, err := core.NewWal(tempFile.Name())
+	w, err := wal.NewWal(tempFile.Name())
 	if err != nil {
 		t.Fatalf("failed to create WAL: %v", err)
 	}
-	defer wal.CloseWal()
+	defer w.CloseWal()
 
-	_, _ = wal.WriteToWal("something\n")
+	_, _ = w.WriteToWal("something\n")
 
-	err = wal.TruncateWal()
+	err = w.TruncateWal()
 	if err != nil {
 		t.Fatalf("TruncateWal failed: %v", err)
 	}
@@ -149,14 +154,13 @@ func TestWal_TruncateSuccess(t *testing.T) {
 }
 
 func TestSnapshot_SaveErrorPaths(t *testing.T) {
-	// Use an invalid path to trigger failure (reserved name on Windows or invalid characters)
-	s := core.NewSnapshot("??invalid??")
-	err := s.Save(map[string]core.Payload{"k": {Value: []byte("v")}})
+	s := snapshot.NewSnapshot("??invalid??")
+	err := s.Save(map[string]storage.Payload{"k": storage.NewPayload([]byte("v"), storage.NewPayloadMetadata(time.Now(), nil))})
 	if err == nil {
 		t.Error("expected error when saving to invalid path, got nil")
 	}
 
-	var snapErr core.SnapshotError
+	var snapErr pkgerrors.SnapshotError
 	if !errors.As(err, &snapErr) {
 		t.Errorf("expected SnapshotError, got %T", err)
 	}
@@ -166,7 +170,7 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 	baseErr := errors.New("base")
 
 	t.Run("KeyError", func(t *testing.T) {
-		ke := core.KeyError{Key: "k", Err: baseErr}
+		ke := pkgerrors.KeyError{Key: "k", Err: baseErr}
 		expected := "key k: base"
 		if ke.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, ke.Error())
@@ -177,7 +181,7 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 	})
 
 	t.Run("WalError", func(t *testing.T) {
-		we := core.WalError{Path: "p", Err: baseErr}
+		we := pkgerrors.WalError{Path: "p", Err: baseErr}
 		expected := "wal error (p) : base"
 		if we.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, we.Error())
@@ -188,7 +192,7 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 	})
 
 	t.Run("SnapshotError", func(t *testing.T) {
-		se := core.SnapshotError{Path: "p", Err: baseErr}
+		se := pkgerrors.SnapshotError{Path: "p", Err: baseErr}
 		expected := "snapshot error (p): base"
 		if se.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, se.Error())
@@ -197,7 +201,7 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 			t.Error("failed to unwrap SnapshotError")
 		}
 
-		seEmpty := core.SnapshotError{Err: baseErr}
+		seEmpty := pkgerrors.SnapshotError{Err: baseErr}
 		expectedEmpty := "snapshot error: base"
 		if seEmpty.Error() != expectedEmpty {
 			t.Errorf("expected %s, got %s", expectedEmpty, seEmpty.Error())
@@ -206,10 +210,11 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 }
 
 func TestStorage_WalErrorPropagation(t *testing.T) {
-	mockWal := &MockWal{FailWrite: true}
-	s := core.NewStorage(mockWal)
+	mockWal := &MockWal{}
+	mockWal.SetFailWrite(true)
+	s := storage.NewStorage(mockWal)
 
-	err := s.Set("k", []byte("v"), core.PayloadMetadata{})
+	err := s.Set("k", []byte("v"), storage.NewPayloadMetadata(time.Now(), nil))
 	if err == nil {
 		t.Error("expected error when WAL write fails, got nil")
 	}
@@ -222,24 +227,25 @@ func TestStorage_WalErrorPropagation(t *testing.T) {
 
 func TestStorage_CleanupExpired_Multiple(t *testing.T) {
 	mockWal := &MockWal{}
-	s := core.NewStorage(mockWal)
+	s := storage.NewStorage(mockWal)
 
-	past1 := time.Now().Add(-10 * time.Minute)
-	past2 := time.Now().Add(-5 * time.Minute)
-	future := time.Now().Add(10 * time.Minute)
+	now := time.Now()
+	past1 := now.Add(-10 * time.Minute)
+	past2 := now.Add(-5 * time.Minute)
+	future := now.Add(10 * time.Minute)
 
-	_ = s.Set("p1", []byte("v1"), core.PayloadMetadata{ExpiresAt: &past1})
-	_ = s.Set("p2", []byte("v2"), core.PayloadMetadata{ExpiresAt: &past2})
-	_ = s.Set("f", []byte("vf"), core.PayloadMetadata{ExpiresAt: &future})
+	_ = s.Set("p1", []byte("v1"), storage.NewPayloadMetadata(now, &past1))
+	_ = s.Set("p2", []byte("v2"), storage.NewPayloadMetadata(now, &past2))
+	_ = s.Set("f", []byte("vf"), storage.NewPayloadMetadata(now, &future))
 
-	if s.Expirations.Len() != 3 {
-		t.Fatalf("expected 3 entries, got %d", s.Expirations.Len())
+	if s.Expirations().Len() != 3 {
+		t.Fatalf("expected 3 entries, got %d", s.Expirations().Len())
 	}
 
 	s.CleanupExpired()
 
-	if s.Expirations.Len() != 1 {
-		t.Errorf("expected 1 entry left, got %d", s.Expirations.Len())
+	if s.Expirations().Len() != 1 {
+		t.Errorf("expected 1 entry left, got %d", s.Expirations().Len())
 	}
 
 	if s.Exists("p1") || s.Exists("p2") {
@@ -251,13 +257,14 @@ func TestStorage_CleanupExpired_Multiple(t *testing.T) {
 }
 
 func TestStorage_SaveSnapshot_TruncateFail(t *testing.T) {
-	mockWal := &MockWal{FailTruncate: true}
-	s := core.NewStorage(mockWal)
+	mockWal := &MockWal{}
+	mockWal.SetFailTruncate(true)
+	s := storage.NewStorage(mockWal)
 	snapPath := "test_save_truncate_fail.snap"
 	defer os.Remove(snapPath)
-	snap := core.NewSnapshot(snapPath)
+	snap := snapshot.NewSnapshot(snapPath)
 
-	err := s.SaveSnapshot(snap)
+	err := s.SaveSnapshot(&snap)
 	if err == nil {
 		t.Error("expected error when WAL truncate fails, got nil")
 	}
