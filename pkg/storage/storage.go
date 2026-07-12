@@ -2,6 +2,7 @@ package storage
 
 import (
 	"container/heap"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
@@ -83,7 +84,8 @@ func (s *Storage) Set(key string, value []byte, metadata PayloadMetadata) error 
 	if metadata.expiresAt != nil {
 		expiresStr = metadata.expiresAt.Format(time.RFC3339)
 	}
-	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, string(value), expiresStr)
+	encodedValue := base64.StdEncoding.EncodeToString(value)
+	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, encodedValue, expiresStr)
 	if _, err := s.wal.WriteToWal(walEntry); err != nil {
 		return err
 	}
@@ -231,7 +233,13 @@ func (s *Storage) Load() error {
 			if len(parts) < 4 {
 				return nil
 			}
-			value := []byte(parts[2])
+			value, err := base64.StdEncoding.DecodeString(parts[2])
+			if err != nil {
+				// Fallback to raw string if base64 decoding fails (for backward compatibility)
+				// or just log/skip if it's strictly enforced.
+				// For now, let's assume it should be decoded.
+				value = []byte(parts[2])
+			}
 			expiresStr := parts[3]
 
 			var expiresAt *time.Time
