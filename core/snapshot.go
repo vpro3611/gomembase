@@ -199,11 +199,11 @@ func (s *Snapshot) SaveSnapshot(w io.Writer, storage map[string]Payload) error {
 		// METADATA EXPIRES AT
 
 		if value.Metadata.ExpiresAt == nil {
-			if err := WriteUintValue[uint8](w, 0); err != nil {
+			if err := WriteUintValue[uint8](w, uint8(0)); err != nil {
 				return SnapshotError{Path: s.Path, Err: errors.Join(ErrSnapshotWriteFailed, err)}
 			}
 		} else {
-			if err := WriteUintValue[uint8](w, 1); err != nil {
+			if err := WriteUintValue[uint8](w, uint8(1)); err != nil {
 				return SnapshotError{Path: s.Path, Err: errors.Join(ErrSnapshotWriteFailed, err)}
 			}
 			if err := WriteInt64Value(w, value.Metadata.ExpiresAt.UnixNano()); err != nil {
