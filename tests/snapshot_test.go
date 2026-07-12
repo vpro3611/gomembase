@@ -5,33 +5,24 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/vpro3611/gomembase.git/core"
+	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
+	"github.com/vpro3611/gomembase.git/pkg/snapshot"
+	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"os"
 	"testing"
 	"time"
 )
 
 func TestSnapshot_SaveLoad(t *testing.T) {
-	s := core.NewSnapshot("test.snap")
-	storage := map[string]core.Payload{
-		"key1": {
-			Value: []byte("value1"),
-			Metadata: core.PayloadMetadata{
-				CreatedAt: time.Now().Truncate(time.Second),
-				ExpiresAt: nil,
-			},
-		},
-		"key2": {
-			Value: []byte("value2"),
-			Metadata: core.PayloadMetadata{
-				CreatedAt: time.Now().Truncate(time.Second),
-				ExpiresAt: func() *time.Time { t := time.Now().Add(time.Hour).Truncate(time.Second); return &t }(),
-			},
-		},
+	s := snapshot.NewSnapshot("test.snap")
+	now := time.Now().Truncate(time.Second)
+	data := map[string]storage.Payload{
+		"key1": storage.NewPayload([]byte("value1"), storage.NewPayloadMetadata(now, nil)),
+		"key2": storage.NewPayload([]byte("value2"), storage.NewPayloadMetadata(now, func() *time.Time { t := now.Add(time.Hour); return &t }())),
 	}
 
 	var buf bytes.Buffer
-	if err := s.SaveSnapshot(&buf, storage); err != nil {
+	if err := s.SaveSnapshot(&buf, data); err != nil {
 		t.Fatalf("SaveSnapshot failed: %v", err)
 	}
 
@@ -40,32 +31,32 @@ func TestSnapshot_SaveLoad(t *testing.T) {
 		t.Fatalf("LoadSnapshot failed: %v", err)
 	}
 
-	if len(loadedStorage) != len(storage) {
-		t.Errorf("got %d keys, want %d", len(loadedStorage), len(storage))
+	if len(loadedStorage) != len(data) {
+		t.Errorf("got %d keys, want %d", len(loadedStorage), len(data))
 	}
 
-	for k, expected := range storage {
+	for k, expected := range data {
 		got, ok := loadedStorage[k]
 		if !ok {
 			t.Errorf("key %s missing in loaded storage", k)
 			continue
 		}
-		if !bytes.Equal(got.Value, expected.Value) {
-			t.Errorf("key %s: got value %s, want %s", k, string(got.Value), string(expected.Value))
+		if !bytes.Equal(got.Value(), expected.Value()) {
+			t.Errorf("key %s: got value %s, want %s", k, string(got.Value()), string(expected.Value()))
 		}
-		if !got.Metadata.CreatedAt.Equal(expected.Metadata.CreatedAt) {
-			t.Errorf("key %s: got CreatedAt %v, want %v", k, got.Metadata.CreatedAt, expected.Metadata.CreatedAt)
+		if !got.Metadata().CreatedAt().Equal(expected.Metadata().CreatedAt()) {
+			t.Errorf("key %s: got CreatedAt %v, want %v", k, got.Metadata().CreatedAt(), expected.Metadata().CreatedAt())
 		}
-		if (got.Metadata.ExpiresAt == nil) != (expected.Metadata.ExpiresAt == nil) {
-			t.Errorf("key %s: got ExpiresAt nil status %v, want %v", k, got.Metadata.ExpiresAt == nil, expected.Metadata.ExpiresAt == nil)
-		} else if got.Metadata.ExpiresAt != nil && !got.Metadata.ExpiresAt.Equal(*expected.Metadata.ExpiresAt) {
-			t.Errorf("key %s: got ExpiresAt %v, want %v", k, *got.Metadata.ExpiresAt, *expected.Metadata.ExpiresAt)
+		if (got.Metadata().ExpiresAt() == nil) != (expected.Metadata().ExpiresAt() == nil) {
+			t.Errorf("key %s: got ExpiresAt nil status %v, want %v", k, got.Metadata().ExpiresAt() == nil, expected.Metadata().ExpiresAt() == nil)
+		} else if got.Metadata().ExpiresAt() != nil && !got.Metadata().ExpiresAt().Equal(*expected.Metadata().ExpiresAt()) {
+			t.Errorf("key %s: got ExpiresAt %v, want %v", k, *got.Metadata().ExpiresAt(), *expected.Metadata().ExpiresAt())
 		}
 	}
 }
 
 func TestSnapshot_InvalidHeader(t *testing.T) {
-	s := core.NewSnapshot("test.snap")
+	s := snapshot.NewSnapshot("test.snap")
 
 	t.Run("InvalidMagic", func(t *testing.T) {
 		buf := bytes.NewBuffer([]byte("WRNG"))            // Wrong magic (4 bytes)
@@ -75,14 +66,14 @@ func TestSnapshot_InvalidHeader(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for invalid magic, got nil")
 		}
-		if !errors.Is(err, core.ErrInvalidSnapshotMagic) {
+		if !errors.Is(err, pkgerrors.ErrInvalidSnapshotMagic) {
 			t.Errorf("expected ErrInvalidSnapshotMagic, got %v", err)
 		}
 	})
 
 	t.Run("InvalidVersion", func(t *testing.T) {
 		var buf bytes.Buffer
-		buf.Write(core.FirstBytes[:])
+		buf.Write(snapshot.FirstBytes[:])
 		binary.Write(&buf, binary.LittleEndian, uint16(999)) // Wrong version
 		binary.Write(&buf, binary.LittleEndian, uint64(0))   // Count 0
 
@@ -90,18 +81,18 @@ func TestSnapshot_InvalidHeader(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for invalid version, got nil")
 		}
-		if !errors.Is(err, core.ErrInvalidSnapshotVersion) {
+		if !errors.Is(err, pkgerrors.ErrInvalidSnapshotVersion) {
 			t.Errorf("expected ErrInvalidSnapshotVersion, got %v", err)
 		}
 	})
 }
 
 func TestSnapshot_EmptyStorage(t *testing.T) {
-	s := core.NewSnapshot("empty.snap")
-	storage := make(map[string]core.Payload)
+	s := snapshot.NewSnapshot("empty.snap")
+	data := make(map[string]storage.Payload)
 
 	var buf bytes.Buffer
-	if err := s.SaveSnapshot(&buf, storage); err != nil {
+	if err := s.SaveSnapshot(&buf, data); err != nil {
 		t.Fatalf("SaveSnapshot failed: %v", err)
 	}
 
@@ -116,22 +107,17 @@ func TestSnapshot_EmptyStorage(t *testing.T) {
 }
 
 func TestSnapshot_LargeStorage(t *testing.T) {
-	s := core.NewSnapshot("large.snap")
-	storage := make(map[string]core.Payload)
+	s := snapshot.NewSnapshot("large.snap")
+	data := make(map[string]storage.Payload)
 	count := 1000
 
 	for i := range count {
-		key := "key_" + string(rune(i))
-		storage[key] = core.Payload{
-			Value: []byte("value_" + string(rune(i))),
-			Metadata: core.PayloadMetadata{
-				CreatedAt: time.Now(),
-			},
-		}
+		key := fmt.Sprintf("key_%d", i)
+		data[key] = storage.NewPayload([]byte(fmt.Sprintf("value_%d", i)), storage.NewPayloadMetadata(time.Now(), nil))
 	}
 
 	var buf bytes.Buffer
-	if err := s.SaveSnapshot(&buf, storage); err != nil {
+	if err := s.SaveSnapshot(&buf, data); err != nil {
 		t.Fatalf("SaveSnapshot failed: %v", err)
 	}
 
@@ -146,24 +132,24 @@ func TestSnapshot_LargeStorage(t *testing.T) {
 }
 
 func TestSnapshot_TruncatedFile(t *testing.T) {
-	s := core.NewSnapshot("truncated.snap")
-	storage := map[string]core.Payload{
-		"key1": {Value: []byte("v1"), Metadata: core.PayloadMetadata{CreatedAt: time.Now()}},
+	s := snapshot.NewSnapshot("truncated.snap")
+	data := map[string]storage.Payload{
+		"key1": storage.NewPayload([]byte("v1"), storage.NewPayloadMetadata(time.Now(), nil)),
 	}
 
 	var buf bytes.Buffer
-	_ = s.SaveSnapshot(&buf, storage)
-	data := buf.Bytes()
+	_ = s.SaveSnapshot(&buf, data)
+	raw := buf.Bytes()
 
 	// Test truncation at different points
-	for i := range len(data) - 1 {
-		t.Run("TruncatedAt_"+string(rune(i)), func(t *testing.T) {
-			reader := bytes.NewReader(data[:i])
+	for i := range len(raw) - 1 {
+		t.Run(fmt.Sprintf("TruncatedAt_%d", i), func(t *testing.T) {
+			reader := bytes.NewReader(raw[:i])
 			_, err := s.LoadSnapshot(reader)
 			if err == nil {
 				t.Error("expected error for truncated file, got nil")
 			}
-			if !errors.Is(err, core.ErrSnapshotReadFailed) {
+			if !errors.Is(err, pkgerrors.ErrSnapshotReadFailed) {
 				t.Errorf("expected ErrSnapshotReadFailed, got %v", err)
 			}
 		})
@@ -175,12 +161,12 @@ func TestSnapshot_FileAtomicSave(t *testing.T) {
 	defer os.Remove(path)
 	defer os.Remove(path + ".tmp")
 
-	s := core.NewSnapshot(path)
-	storage := map[string]core.Payload{
-		"key1": {Value: []byte("value1"), Metadata: core.PayloadMetadata{CreatedAt: time.Now().Truncate(time.Second)}},
+	s := snapshot.NewSnapshot(path)
+	data := map[string]storage.Payload{
+		"key1": storage.NewPayload([]byte("value1"), storage.NewPayloadMetadata(time.Now().Truncate(time.Second), nil)),
 	}
 
-	if err := s.Save(storage); err != nil {
+	if err := s.Save(data); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -195,20 +181,20 @@ func TestSnapshot_FileAtomicSave(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if len(loaded) != 1 || !bytes.Equal(loaded["key1"].Value, storage["key1"].Value) {
+	if len(loaded) != 1 || !bytes.Equal(loaded["key1"].Value(), data["key1"].Value()) {
 		t.Errorf("loaded data mismatch")
 	}
 }
 
 func TestSnapshot_Consistency(t *testing.T) {
-	s := core.NewSnapshot("consistent.snap")
-	storage := map[string]core.Payload{
-		"k1": {Value: []byte("v1"), Metadata: core.PayloadMetadata{CreatedAt: time.Now().Truncate(time.Second)}},
+	s := snapshot.NewSnapshot("consistent.snap")
+	data := map[string]storage.Payload{
+		"k1": storage.NewPayload([]byte("v1"), storage.NewPayloadMetadata(time.Now().Truncate(time.Second), nil)),
 	}
 
 	// First Save
 	var buf1 bytes.Buffer
-	if err := s.SaveSnapshot(&buf1, storage); err != nil {
+	if err := s.SaveSnapshot(&buf1, data); err != nil {
 		t.Fatalf("first SaveSnapshot failed: %v", err)
 	}
 
@@ -232,19 +218,19 @@ func TestSnapshot_Consistency(t *testing.T) {
 }
 
 func TestSnapshot_ExtremeValues(t *testing.T) {
-	s := core.NewSnapshot("extreme.snap")
+	s := snapshot.NewSnapshot("extreme.snap")
 	largeVal := make([]byte, 10*1024*1024) // 10MB
 	for i := range largeVal {
 		largeVal[i] = 'A'
 	}
 
-	storage := map[string]core.Payload{
-		"large": {Value: largeVal, Metadata: core.PayloadMetadata{CreatedAt: time.Now()}},
-		"":      {Value: []byte(""), Metadata: core.PayloadMetadata{CreatedAt: time.Now()}}, // Empty key and value
+	data := map[string]storage.Payload{
+		"large": storage.NewPayload(largeVal, storage.NewPayloadMetadata(time.Now(), nil)),
+		"":      storage.NewPayload([]byte(""), storage.NewPayloadMetadata(time.Now(), nil)), // Empty key and value
 	}
 
 	var buf bytes.Buffer
-	if err := s.SaveSnapshot(&buf, storage); err != nil {
+	if err := s.SaveSnapshot(&buf, data); err != nil {
 		t.Fatalf("SaveSnapshot failed with extreme values: %v", err)
 	}
 
@@ -253,29 +239,29 @@ func TestSnapshot_ExtremeValues(t *testing.T) {
 		t.Fatalf("LoadSnapshot failed with extreme values: %v", err)
 	}
 
-	if !bytes.Equal(loaded["large"].Value, largeVal) {
+	if !bytes.Equal(loaded["large"].Value(), largeVal) {
 		t.Error("large value mismatch")
 	}
-	if v, ok := loaded[""]; !ok || len(v.Value) != 0 {
+	if v, ok := loaded[""]; !ok || len(v.Value()) != 0 {
 		t.Error("empty key/value mismatch")
 	}
 }
 
 func TestSnapshot_CorruptPayload(t *testing.T) {
-	s := core.NewSnapshot("corrupt.snap")
-	storage := map[string]core.Payload{
-		"k1": {Value: []byte("v1"), Metadata: core.PayloadMetadata{CreatedAt: time.Now()}},
+	s := snapshot.NewSnapshot("corrupt.snap")
+	data := map[string]storage.Payload{
+		"k1": storage.NewPayload([]byte("v1"), storage.NewPayloadMetadata(time.Now(), nil)),
 	}
 
 	var buf bytes.Buffer
-	_ = s.SaveSnapshot(&buf, storage)
-	data := buf.Bytes()
+	_ = s.SaveSnapshot(&buf, data)
+	raw := buf.Bytes()
 
 	// Corrupt the 'count' in header to be much larger than reality
 	// Header: Magic(4) + Version(2) + Count(8)
 	// Count starts at index 6
-	corruptedCount := make([]byte, len(data))
-	copy(corruptedCount, data)
+	corruptedCount := make([]byte, len(raw))
+	copy(corruptedCount, raw)
 	binary.LittleEndian.PutUint64(corruptedCount[6:14], 9999)
 
 	t.Run("CountTooLarge", func(t *testing.T) {
@@ -288,8 +274,8 @@ func TestSnapshot_CorruptPayload(t *testing.T) {
 
 	// Corrupt a string length to be huge (memory exhaustion test)
 	// After header (14 bytes), first entry starts: KeyLen(4) + Key + ValLen(4) + Val + CreatedAt(8) + HasExpiry(1)
-	corruptedLen := make([]byte, len(data))
-	copy(corruptedLen, data)
+	corruptedLen := make([]byte, len(raw))
+	copy(corruptedLen, raw)
 	binary.LittleEndian.PutUint32(corruptedLen[14:18], 0xFFFFFFFF) // Max uint32 key length
 
 	t.Run("InvalidStringLength", func(t *testing.T) {
@@ -316,33 +302,29 @@ func TestSnapshot_FilePermissions(t *testing.T) {
 	}
 	defer os.Remove(path)
 
-	s := core.NewSnapshot(path)
-	storage := map[string]core.Payload{"k": {Value: []byte("v")}}
+	s := snapshot.NewSnapshot(path)
+	data := map[string]storage.Payload{"k": storage.NewPayload([]byte("v"), storage.NewPayloadMetadata(time.Now(), nil))}
 
-	err = s.Save(storage)
+	err = s.Save(data)
 	if err == nil {
 		t.Error("expected error when saving to read-only path, got nil")
 	}
 
-	var snapErr core.SnapshotError
+	var snapErr pkgerrors.SnapshotError
 	if !errors.As(err, &snapErr) {
-		t.Errorf("expected core.SnapshotError, got %T", err)
+		t.Errorf("expected pkgerrors.SnapshotError, got %T", err)
 	}
 }
 
 func TestSnapshot_DeepConsistency(t *testing.T) {
-	s := core.NewSnapshot("deep.snap")
+	s := snapshot.NewSnapshot("deep.snap")
 
 	// Create storage with multiple items to test map iteration order effect (or lack thereof if we want determinism)
-	storage := make(map[string]core.Payload)
+	data := make(map[string]storage.Payload)
+	now := time.Now().Truncate(time.Second)
 	for i := range 10 {
 		key := fmt.Sprintf("k%d", i)
-		storage[key] = core.Payload{
-			Value: []byte(fmt.Sprintf("v%d", i)),
-			Metadata: core.PayloadMetadata{
-				CreatedAt: time.Now().Truncate(time.Second),
-			},
-		}
+		data[key] = storage.NewPayload([]byte(fmt.Sprintf("v%d", i)), storage.NewPayloadMetadata(now, nil))
 	}
 
 	// In Go, map iteration is random.
@@ -350,12 +332,12 @@ func TestSnapshot_DeepConsistency(t *testing.T) {
 	// Let's see if the current implementation is deterministic (it probably isn't, but we should know).
 
 	var buf1 bytes.Buffer
-	if err := s.SaveSnapshot(&buf1, storage); err != nil {
+	if err := s.SaveSnapshot(&buf1, data); err != nil {
 		t.Fatalf("first save failed: %v", err)
 	}
 
 	var buf2 bytes.Buffer
-	if err := s.SaveSnapshot(&buf2, storage); err != nil {
+	if err := s.SaveSnapshot(&buf2, data); err != nil {
 		t.Fatalf("second save failed: %v", err)
 	}
 
@@ -373,13 +355,13 @@ func TestSnapshot_DeepConsistency(t *testing.T) {
 		t.Fatalf("load failed: %v", err)
 	}
 
-	if len(loaded) != len(storage) {
-		t.Errorf("got %d items, want %d", len(loaded), len(storage))
+	if len(loaded) != len(data) {
+		t.Errorf("got %d items, want %d", len(loaded), len(data))
 	}
 
-	for k, v := range storage {
+	for k, v := range data {
 		lv, ok := loaded[k]
-		if !ok || !bytes.Equal(lv.Value, v.Value) {
+		if !ok || !bytes.Equal(lv.Value(), v.Value()) {
 			t.Errorf("logical mismatch for key %s", k)
 		}
 	}
