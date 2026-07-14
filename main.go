@@ -22,6 +22,7 @@ func main() {
 
 	s := storage.NewStorage(w)
 	snap := snapshot.NewSnapshot("test.rdb")
+	s.AddSnapshotter(&snap) // Register it so Reset/Clear can find it
 
 	// 1. Load from snapshot first
 	if err := s.LoadFromSnapshot(&snap); err != nil {
