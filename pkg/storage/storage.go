@@ -8,6 +8,8 @@ import (
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +17,19 @@ import (
 
 type StorageInterface interface {
 	Set(key string, value []byte, metadata PayloadMetadata) error
+	Mset(data map[string]Payload) error
 	SetWithTTL(key string, value []byte, ttl time.Duration) error
+	MsetWithTTL(data map[string]Payload, ttl time.Duration) error
 	Get(key string) ([]byte, error)
+	Mget(keys []string) (map[string][]byte, error)
 	Delete(key string) error
 	Exists(key string) bool
+	Increment(key string) (int64, error)
+	IncrementBy(key string, amount int64) (int64, error)
+	Decrement(key string) (int64, error)
+	DecrementBy(key string, amount int64) (int64, error)
+	Clear() error    // preserves the map allocation but resets the map to empty. good if expected to re-fill the map to a similar size, avoids allocation and preserves buckets.
+	Reset() error    // creates a new empty map, does not preserve the map allocation and capacity. the opposite of Clear().
 	CleanupExpired() // Cleanup expired entries
 	Load() error     // Load from WAL
 }
@@ -28,7 +39,140 @@ type Storage struct {
 	data          map[string]Payload
 	expirations   ExpirationHeap
 	expirationMap map[string]*ExpirationEntry
+	snapshots     []Snapshotter
 	mutex         sync.RWMutex
+}
+
+func (s *Storage) Reset() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.data = make(map[string]Payload)
+	s.expirations = make(ExpirationHeap, 0)
+	s.expirationMap = make(map[string]*ExpirationEntry)
+
+	for _, snap := range s.snapshots {
+		if err := snap.Delete(); err != nil {
+			return err
+		}
+	}
+
+	return s.wal.TruncateWal()
+}
+
+func (s *Storage) Clear() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	clear(s.data)
+	s.expirations = make(ExpirationHeap, 0)
+	clear(s.expirationMap)
+
+	for _, snap := range s.snapshots {
+		if err := snap.Delete(); err != nil {
+			return err
+		}
+	}
+
+	return s.wal.TruncateWal()
+}
+
+func (s *Storage) DecrementBy(key string, amount int64) (int64, error) {
+	return s.incrementBy(key, -amount)
+}
+
+func (s *Storage) Decrement(key string) (int64, error) {
+	return s.incrementBy(key, -1)
+}
+
+func (s *Storage) IncrementBy(key string, amount int64) (int64, error) {
+	return s.incrementBy(key, amount)
+}
+
+func (s *Storage) Increment(key string) (int64, error) {
+	return s.incrementBy(key, 1)
+}
+
+func (s *Storage) incrementBy(key string, amount int64) (int64, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	payload, exists := s.data[key]
+	if !exists {
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotFoundError}
+	}
+
+	if payload.metadata.IsExpired() {
+		if _, err := s.wal.WriteToWal("DELETE|" + key + "\n"); err == nil {
+			s.deleteNoLock(key)
+		}
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError}
+	}
+
+	intVal, err := strconv.ParseInt(string(payload.value), 10, 64)
+	if err != nil {
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotIntegerError}
+	}
+
+	newVal := intVal + amount
+	newValueBytes := []byte(strconv.FormatInt(newVal, 10))
+
+	// Update in-memory
+	s.data[key] = Payload{
+		value:    newValueBytes,
+		metadata: payload.metadata,
+	}
+
+	// Update WAL
+	expiresStr := "PERSISTENT"
+	if payload.metadata.expiresAt != nil {
+		expiresStr = payload.metadata.expiresAt.Format(time.RFC3339)
+	}
+	encodedValue := base64.StdEncoding.EncodeToString(newValueBytes)
+	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, encodedValue, expiresStr)
+	if _, err := s.wal.WriteToWal(walEntry); err != nil {
+		return 0, err
+	}
+
+	return newVal, nil
+}
+
+func (s *Storage) Mget(keys []string) (map[string][]byte, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	result := make(map[string][]byte, len(keys))
+
+	var expiredKeys []string
+
+	for _, key := range keys {
+		if payload, ok := s.data[key]; ok {
+			if payload.metadata.IsExpired() {
+				result[key] = nil
+				expiredKeys = append(expiredKeys, key)
+			} else {
+				result[key] = payload.value
+			}
+		} else {
+			result[key] = nil
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + key + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return result, nil
 }
 
 func NewStorage(w wal.WalInterface) *Storage {
@@ -37,6 +181,7 @@ func NewStorage(w wal.WalInterface) *Storage {
 		data:          make(map[string]Payload),
 		expirations:   make(ExpirationHeap, 0),
 		expirationMap: make(map[string]*ExpirationEntry),
+		snapshots:     make([]Snapshotter, 0),
 	}
 }
 
@@ -56,10 +201,38 @@ func (s *Storage) ExpirationMap() map[string]*ExpirationEntry {
 	return s.expirationMap
 }
 
+func (s *Storage) AddSnapshotter(snap Snapshotter) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.snapshots = append(s.snapshots, snap)
+}
+
+func (s *Storage) Snapshots() []Snapshotter {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return slices.Clone(s.snapshots)
+}
+
 func (s *Storage) Set(key string, value []byte, metadata PayloadMetadata) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.setNoLock(key, value, metadata)
+}
+
+func (s *Storage) Mset(data map[string]Payload) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	for k, v := range data {
+		if err := s.setNoLock(k, v.value, v.metadata); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Storage) setNoLock(key string, value []byte, metadata PayloadMetadata) error {
 	s.data[key] = Payload{
 		value:    value,
 		metadata: metadata,
@@ -97,6 +270,22 @@ func (s *Storage) SetWithTTL(key string, value []byte, ttl time.Duration) error 
 	expiresAt := now.Add(ttl)
 	metadata := NewPayloadMetadata(now, &expiresAt)
 	return s.Set(key, value, metadata)
+}
+
+func (s *Storage) MsetWithTTL(data map[string]Payload, ttl time.Duration) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+	metadata := NewPayloadMetadata(now, &expiresAt)
+
+	for k, v := range data {
+		if err := s.setNoLock(k, v.value, metadata); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Storage) Get(key string) ([]byte, error) {
@@ -171,6 +360,7 @@ func (s *Storage) CleanupExpired() {
 type Snapshotter interface {
 	Load() (map[string]Payload, error)
 	Save(data map[string]Payload) error
+	Delete() error
 }
 
 func (s *Storage) LoadFromSnapshot(snap Snapshotter) error {
