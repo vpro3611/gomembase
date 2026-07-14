@@ -171,34 +171,58 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 
 	t.Run("KeyError", func(t *testing.T) {
 		ke := pkgerrors.KeyError{Key: "k", Err: baseErr}
-		expected := "key k: base"
+		expected := "key error: key \"k\": base"
 		if ke.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, ke.Error())
 		}
 		if errors.Unwrap(ke) != baseErr {
 			t.Error("failed to unwrap KeyError")
 		}
+		// Test extra rich fields
+		keRich := pkgerrors.KeyError{Key: "k", Err: pkgerrors.KeyNotFoundError, Operation: "GET"}
+		expectedRich := "key error: key \"k\": during GET: key was not found"
+		if keRich.Error() != expectedRich {
+			t.Errorf("expected %s, got %s", expectedRich, keRich.Error())
+		}
+		if keRich.ErrorCode() != pkgerrors.CodeKeyNotFound {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeKeyNotFound, keRich.ErrorCode())
+		}
+		if keRich.HTTPStatus() != 404 {
+			t.Errorf("expected HTTP status 404, got %d", keRich.HTTPStatus())
+		}
 	})
 
 	t.Run("WalError", func(t *testing.T) {
 		we := pkgerrors.WalError{Path: "p", Err: baseErr}
-		expected := "wal error (p) : base"
+		expected := "wal error at path \"p\": base"
 		if we.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, we.Error())
 		}
 		if errors.Unwrap(we) != baseErr {
 			t.Error("failed to unwrap WalError")
 		}
+		if we.ErrorCode() != pkgerrors.CodeWalError {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeWalError, we.ErrorCode())
+		}
+		if we.HTTPStatus() != 500 {
+			t.Errorf("expected HTTP status 500, got %d", we.HTTPStatus())
+		}
 	})
 
 	t.Run("SnapshotError", func(t *testing.T) {
 		se := pkgerrors.SnapshotError{Path: "p", Err: baseErr}
-		expected := "snapshot error (p): base"
+		expected := "snapshot error at path \"p\": base"
 		if se.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, se.Error())
 		}
 		if errors.Unwrap(se) != baseErr {
 			t.Error("failed to unwrap SnapshotError")
+		}
+		if se.ErrorCode() != pkgerrors.CodeSnapshotError {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeSnapshotError, se.ErrorCode())
+		}
+		if se.HTTPStatus() != 500 {
+			t.Errorf("expected HTTP status 500, got %d", se.HTTPStatus())
 		}
 
 		seEmpty := pkgerrors.SnapshotError{Err: baseErr}
