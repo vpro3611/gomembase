@@ -22,6 +22,8 @@ var (
 	ErrInvalidSnapshotVersion = errors.New("unsupported snapshot version")
 	ErrSnapshotWriteFailed    = errors.New("failed to write snapshot")
 	ErrSnapshotReadFailed     = errors.New("failed to read snapshot")
+
+	RegexpError = errors.New("invalid regexp, compilation failed")
 )
 
 type KeyError struct {
@@ -63,5 +65,18 @@ func (e SnapshotError) Error() string {
 }
 
 func (e SnapshotError) Unwrap() error {
+	return e.Err
+}
+
+type RegexError struct {
+	RegexExpr string
+	Err       error
+}
+
+func (e RegexError) Error() string {
+	return fmt.Sprintf("invalid regex expression (%s): %v", e.RegexExpr, e.Err)
+}
+
+func (e RegexError) Unwrap() error {
 	return e.Err
 }
