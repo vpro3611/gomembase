@@ -268,7 +268,7 @@ func TestStorage_SaveSnapshot_TruncateFail(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when WAL truncate fails, got nil")
 	}
-	if err.Error() != "wal truncate failed" {
-		t.Errorf("expected 'wal truncate failed', got %v", err)
+	if !errors.Is(err, ErrMockTruncateFailed) {
+		t.Errorf("expected ErrMockTruncateFailed, got %v", err)
 	}
 }
