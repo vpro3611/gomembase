@@ -7,7 +7,9 @@ import (
 	"fmt"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
+	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +34,15 @@ type StorageInterface interface {
 	Reset() error    // creates a new empty map, does not preserve the map allocation and capacity. the opposite of Clear().
 	CleanupExpired() // Cleanup expired entries
 	Load() error     // Load from WAL
+	DeleteByPrefix(prefix string) int64
+	DeleteByRegex(regex string) (int64, error)
+	DeleteBySuffix(suffix string) int64
+	FindByPrefix(prefix string) map[string][]byte
+	FindByRegex(regex string) (map[string][]byte, error)
+	FindBySuffix(suffix string) map[string][]byte
+	CountByPrefix(prefix string) int64
+	CountByRegex(regex string) (int64, error)
+	CountBySuffix(suffix string) int64
 }
 
 type Storage struct {
@@ -41,6 +52,297 @@ type Storage struct {
 	expirationMap map[string]*ExpirationEntry
 	snapshots     []Snapshotter
 	mutex         sync.RWMutex
+}
+
+func (s *Storage) CountBySuffix(suffix string) int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return count
+}
+
+func (s *Storage) CountByRegex(regex string) (int64, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return 0, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if re.MatchString(k) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return count, nil
+}
+
+func (s *Storage) CountByPrefix(prefix string) int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return count
+}
+
+func (s *Storage) FindBySuffix(suffix string) map[string][]byte {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var result = make(map[string][]byte)
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			result[k] = v.value
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return result
+}
+
+func (s *Storage) FindByRegex(regex string) (map[string][]byte, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return nil, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var result = make(map[string][]byte)
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if re.MatchString(k) {
+			result[k] = v.value
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return result, nil
+}
+
+func (s *Storage) FindByPrefix(prefix string) map[string][]byte {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var result = make(map[string][]byte)
+	var expiredKeys []string
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			result[k] = v.value
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		s.mutex.RUnlock()
+		s.mutex.Lock()
+		for _, key := range expiredKeys {
+			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+					s.deleteNoLock(key)
+				}
+			}
+		}
+		s.mutex.Unlock()
+		s.mutex.RLock()
+	}
+
+	return result
+}
+
+func (s *Storage) DeleteBySuffix(suffix string) int64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var count int64
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+				s.deleteNoLock(k)
+			}
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+				break
+			}
+			s.deleteNoLock(k)
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Storage) DeleteByRegex(regex string) (int64, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return 0, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var count int64
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+				s.deleteNoLock(k)
+			}
+			continue
+		}
+		if re.MatchString(k) {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+				return count, err
+			}
+			s.deleteNoLock(k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Storage) DeleteByPrefix(prefix string) int64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var count int64
+
+	for k, v := range s.data {
+		if v.metadata.IsExpired() {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+				s.deleteNoLock(k)
+			}
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+				break
+			}
+			s.deleteNoLock(k)
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Storage) Reset() error {
@@ -103,7 +405,7 @@ func (s *Storage) incrementBy(key string, amount int64) (int64, error) {
 	}
 
 	if payload.metadata.IsExpired() {
-		if _, err := s.wal.WriteToWal("DELETE|" + key + "\n"); err == nil {
+		if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
 			s.deleteNoLock(key)
 		}
 		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError}
@@ -129,7 +431,7 @@ func (s *Storage) incrementBy(key string, amount int64) (int64, error) {
 		expiresStr = payload.metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(newValueBytes)
-	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, encodedValue, expiresStr)
+	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", url.PathEscape(key), encodedValue, expiresStr)
 	if _, err := s.wal.WriteToWal(walEntry); err != nil {
 		return 0, err
 	}
@@ -258,7 +560,7 @@ func (s *Storage) setNoLock(key string, value []byte, metadata PayloadMetadata) 
 		expiresStr = metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(value)
-	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", key, encodedValue, expiresStr)
+	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", url.PathEscape(key), encodedValue, expiresStr)
 	if _, err := s.wal.WriteToWal(walEntry); err != nil {
 		return err
 	}
@@ -309,7 +611,7 @@ func (s *Storage) Delete(key string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if _, err := s.wal.WriteToWal("DELETE|" + key + "\n"); err != nil {
+	if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err != nil {
 		return err
 	}
 
@@ -380,6 +682,10 @@ func (s *Storage) LoadFromSnapshot(snap Snapshotter) error {
 			continue
 		}
 		s.data[k] = v
+		if oldEntry, ok := s.expirationMap[k]; ok {
+			heap.Remove(&s.expirations, oldEntry.index)
+			delete(s.expirationMap, k)
+		}
 		if v.metadata.expiresAt != nil {
 			entry := &ExpirationEntry{
 				key:       k,
@@ -414,7 +720,11 @@ func (s *Storage) Load() error {
 		}
 
 		action := parts[0]
-		key := parts[1]
+		escapedKey := parts[1]
+		key, err := url.PathUnescape(escapedKey)
+		if err != nil {
+			key = escapedKey
+		}
 
 		switch action {
 		case "DELETE":
@@ -450,6 +760,11 @@ func (s *Storage) Load() error {
 					createdAt: time.Now(),
 					expiresAt: expiresAt,
 				},
+			}
+
+			if oldEntry, ok := s.expirationMap[key]; ok {
+				heap.Remove(&s.expirations, oldEntry.index)
+				delete(s.expirationMap, key)
 			}
 
 			if expiresAt != nil {
