@@ -399,21 +399,26 @@ func (s *Storage) incrementBy(key string, amount int64) (int64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	op := "INCREMENT"
+	if amount < 0 {
+		op = "DECREMENT"
+	}
+
 	payload, exists := s.data[key]
 	if !exists {
-		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotFoundError}
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotFoundError, Operation: op}
 	}
 
 	if payload.metadata.IsExpired() {
 		if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
 			s.deleteNoLock(key)
 		}
-		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError}
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError, Operation: op}
 	}
 
 	intVal, err := strconv.ParseInt(string(payload.value), 10, 64)
 	if err != nil {
-		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotIntegerError}
+		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotIntegerError, Value: string(payload.value), Operation: op}
 	}
 
 	newVal := intVal + amount
@@ -595,13 +600,13 @@ func (s *Storage) Get(key string) ([]byte, error) {
 	payload, exists := s.data[key]
 	if !exists {
 		s.mutex.RUnlock()
-		return nil, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotFoundError}
+		return nil, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyNotFoundError, Operation: "GET"}
 	}
 
 	if payload.metadata.IsExpired() {
 		s.mutex.RUnlock()
 		_ = s.Delete(key)
-		return nil, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError}
+		return nil, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError, Operation: "GET"}
 	}
 	defer s.mutex.RUnlock()
 	return payload.value, nil
