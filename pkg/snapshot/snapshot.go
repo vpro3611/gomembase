@@ -183,6 +183,14 @@ func (s *Snapshot) Save(data map[string]storage.Payload) error {
 	return nil
 }
 
+func (s *Snapshot) Delete() error {
+	err := os.Remove(s.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to delete snapshot file: %w", err)}
+	}
+	return nil
+}
+
 func (s *Snapshot) Load() (map[string]storage.Payload, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
