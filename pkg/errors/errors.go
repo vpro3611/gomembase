@@ -6,8 +6,9 @@ import (
 )
 
 var (
-	KeyNotFoundError = errors.New("key was not found")
-	KeyExpiredError  = errors.New("key has expired")
+	KeyNotFoundError   = errors.New("key was not found")
+	KeyExpiredError    = errors.New("key has expired")
+	KeyNotIntegerError = errors.New("key is not an integer")
 
 	WalFailedToCreateError   = errors.New("wal failed to create")
 	WalFailedToWriteError    = errors.New("wal failed to write")
