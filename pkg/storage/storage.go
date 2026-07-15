@@ -272,6 +272,10 @@ func (s *Storage) DeleteBySuffix(suffix string) int64 {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.deleteBySuffixNoLock(suffix)
+}
+
+func (s *Storage) deleteBySuffixNoLock(suffix string) int64 {
 	var count int64
 
 	for k, v := range s.data {
@@ -301,6 +305,10 @@ func (s *Storage) DeleteByRegex(regex string) (int64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.deleteByRegexNoLock(re)
+}
+
+func (s *Storage) deleteByRegexNoLock(re *regexp.Regexp) (int64, error) {
 	var count int64
 
 	for k, v := range s.data {
@@ -325,6 +333,10 @@ func (s *Storage) DeleteByPrefix(prefix string) int64 {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.deleteByPrefixNoLock(prefix)
+}
+
+func (s *Storage) deleteByPrefixNoLock(prefix string) int64 {
 	var count int64
 
 	for k, v := range s.data {
@@ -349,6 +361,10 @@ func (s *Storage) Reset() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.resetNoLock()
+}
+
+func (s *Storage) resetNoLock() error {
 	s.data = make(map[string]Payload)
 	s.expirations = make(ExpirationHeap, 0)
 	s.expirationMap = make(map[string]*ExpirationEntry)
@@ -366,6 +382,10 @@ func (s *Storage) Clear() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.clearNoLock()
+}
+
+func (s *Storage) clearNoLock() error {
 	clear(s.data)
 	s.expirations = make(ExpirationHeap, 0)
 	clear(s.expirationMap)
@@ -380,25 +400,30 @@ func (s *Storage) Clear() error {
 }
 
 func (s *Storage) DecrementBy(key string, amount int64) (int64, error) {
-	return s.incrementBy(key, -amount)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.incrementByNoLock(key, -amount)
 }
 
 func (s *Storage) Decrement(key string) (int64, error) {
-	return s.incrementBy(key, -1)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.incrementByNoLock(key, -1)
 }
 
 func (s *Storage) IncrementBy(key string, amount int64) (int64, error) {
-	return s.incrementBy(key, amount)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.incrementByNoLock(key, amount)
 }
 
 func (s *Storage) Increment(key string) (int64, error) {
-	return s.incrementBy(key, 1)
-}
-
-func (s *Storage) incrementBy(key string, amount int64) (int64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	return s.incrementByNoLock(key, 1)
+}
 
+func (s *Storage) incrementByNoLock(key string, amount int64) (int64, error) {
 	op := "INCREMENT"
 	if amount < 0 {
 		op = "DECREMENT"
@@ -470,7 +495,7 @@ func (s *Storage) Mget(keys []string) (map[string][]byte, error) {
 		s.mutex.Lock()
 		for _, key := range expiredKeys {
 			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + key + "\n"); err == nil {
+				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
 					s.deleteNoLock(key)
 				}
 			}
@@ -511,12 +536,20 @@ func (s *Storage) ExpirationMap() map[string]*ExpirationEntry {
 func (s *Storage) AddSnapshotter(snap Snapshotter) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.addSnapshotterNoLock(snap)
+}
+
+func (s *Storage) addSnapshotterNoLock(snap Snapshotter) {
 	s.snapshots = append(s.snapshots, snap)
 }
 
 func (s *Storage) Snapshots() []Snapshotter {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	return s.snapshotsNoLock()
+}
+
+func (s *Storage) snapshotsNoLock() []Snapshotter {
 	return slices.Clone(s.snapshots)
 }
 
@@ -531,6 +564,10 @@ func (s *Storage) Mset(data map[string]Payload) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.msetNoLock(data)
+}
+
+func (s *Storage) msetNoLock(data map[string]Payload) error {
 	for k, v := range data {
 		if err := s.setNoLock(k, v.value, v.metadata); err != nil {
 			return err
@@ -583,6 +620,10 @@ func (s *Storage) MsetWithTTL(data map[string]Payload, ttl time.Duration) error 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.msetWithTTLNoLock(data, ttl)
+}
+
+func (s *Storage) msetWithTTLNoLock(data map[string]Payload, ttl time.Duration) error {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
 	metadata := NewPayloadMetadata(now, &expiresAt)
@@ -653,6 +694,10 @@ func (s *Storage) CleanupExpired() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	s.cleanupExpiredNoLock()
+}
+
+func (s *Storage) cleanupExpiredNoLock() {
 	now := time.Now()
 	for s.expirations.Len() > 0 {
 		entry := s.expirations[0]
@@ -674,6 +719,10 @@ func (s *Storage) LoadFromSnapshot(snap Snapshotter) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.loadFromSnapshotNoLock(snap)
+}
+
+func (s *Storage) loadFromSnapshotNoLock(snap Snapshotter) error {
 	data, err := snap.Load()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file or directory") {
@@ -707,6 +756,10 @@ func (s *Storage) SaveSnapshot(snap Snapshotter) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.saveSnapshotNoLock(snap)
+}
+
+func (s *Storage) saveSnapshotNoLock(snap Snapshotter) error {
 	if err := snap.Save(s.data); err != nil {
 		return err
 	}
@@ -718,6 +771,10 @@ func (s *Storage) Load() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	return s.loadNoLock()
+}
+
+func (s *Storage) loadNoLock() error {
 	return s.wal.RecoverFromWal(func(line string) error {
 		parts := strings.Split(line, "|")
 		if len(parts) < 2 {
