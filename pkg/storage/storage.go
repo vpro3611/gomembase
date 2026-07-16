@@ -229,13 +229,13 @@ func (s *Storage) deleteBySuffixNoLock(suffix string) int64 {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if strings.HasSuffix(k, suffix) {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
 				break
 			}
 			s.deleteNoLock(k)
@@ -262,13 +262,13 @@ func (s *Storage) deleteByRegexNoLock(re *regexp.Regexp) (int64, error) {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if re.MatchString(k) {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
 				return count, err
 			}
 			s.deleteNoLock(k)
@@ -290,13 +290,13 @@ func (s *Storage) deleteByPrefixNoLock(prefix string) int64 {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if strings.HasPrefix(k, prefix) {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
 				break
 			}
 			s.deleteNoLock(k)
@@ -370,7 +370,7 @@ func (s *Storage) incrementByNoLock(key string, amount int64) (int64, error) {
 	}
 
 	if payload.metadata.IsExpired() {
-		if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err == nil {
+		if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(key)); err == nil {
 			s.deleteNoLock(key)
 		}
 		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError, Operation: op}
@@ -396,7 +396,7 @@ func (s *Storage) incrementByNoLock(key string, amount int64) (int64, error) {
 		expiresStr = payload.metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(newValueBytes)
-	if err := s.walLogger.Log("kv", "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
+	if err := s.walLogger.Log(s.EngineID(), "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
 		return 0, err
 	}
 
@@ -503,7 +503,7 @@ func (s *Storage) setNoLock(key string, value []byte, metadata PayloadMetadata) 
 		expiresStr = metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(value)
-	if err := s.walLogger.Log("kv", "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
+	if err := s.walLogger.Log(s.EngineID(), "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
 		return err
 	}
 	return nil
@@ -557,7 +557,7 @@ func (s *Storage) Delete(key string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err != nil {
+	if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(key)); err != nil {
 		return err
 	}
 
@@ -613,7 +613,7 @@ func (s *Storage) deleteExpiredKeys(keys []string) {
 	defer s.mutex.Unlock()
 	for _, key := range keys {
 		if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err == nil {
+			if err := s.walLogger.Log(s.EngineID(), "DELETE", url.PathEscape(key)); err == nil {
 				s.deleteNoLock(key)
 			}
 		}
