@@ -26,7 +26,7 @@ func TestStorage_Load_DuplicateTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create WAL: %v", err)
 	}
-	s1 := storage.NewStorage(w)
+	s1 := newStorageWithWal(w)
 
 	// Set short TTL first, then overwrite with slightly longer TTL
 	err = s1.SetWithTTL("dup_key", []byte("val1"), 10*time.Second)
@@ -54,8 +54,8 @@ func TestStorage_Load_DuplicateTTL(t *testing.T) {
 	}
 	defer w2.CloseWal()
 
-	s2 := storage.NewStorage(w2)
-	if err := s2.Load(); err != nil {
+	s2 := newStorageWithWal(w2)
+	if err := loadStorage(w2, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestStorage_WAL_SpecialCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create WAL: %v", err)
 	}
-	s1 := storage.NewStorage(w)
+	s1 := newStorageWithWal(w)
 
 	// Set key with pipe delimiter
 	pipeKey := "key|with|pipes"
@@ -119,8 +119,8 @@ func TestStorage_WAL_SpecialCharacters(t *testing.T) {
 	}
 	defer w2.CloseWal()
 
-	s2 := storage.NewStorage(w2)
-	if err := s2.Load(); err != nil {
+	s2 := newStorageWithWal(w2)
+	if err := loadStorage(w2, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 

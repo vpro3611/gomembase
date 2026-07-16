@@ -162,7 +162,7 @@ func TestStorage_WALRecovery(t *testing.T) {
 
 	// 2. Simulate new storage instance with the same WAL
 	s2 := storage.NewStorage(mockWal)
-	if err := s2.Load(); err != nil {
+	if err := loadStorage(mockWal, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
@@ -186,18 +186,18 @@ func TestStorage_WALRecovery_EdgeCases(t *testing.T) {
 
 	// 1. Malformed entries
 	mockWal.WriteToWal("INVALID_LINE\n")
-	mockWal.WriteToWal("SET|only_two_parts\n")
-	mockWal.WriteToWal("SET|key|val|INVALID_DATE\n")
+	mockWal.WriteToWal("kv|SET|only_two_parts\n")
+	mockWal.WriteToWal("kv|SET|key|val|INVALID_DATE\n")
 
 	// 2. Expired entry
 	past := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
-	mockWal.WriteToWal(fmt.Sprintf("SET|expired|val|%s\n", past))
+	mockWal.WriteToWal(fmt.Sprintf("kv|SET|expired|val|%s\n", past))
 
 	// 3. Valid entry
-	mockWal.WriteToWal("SET|valid|val|PERSISTENT\n")
+	mockWal.WriteToWal("kv|SET|valid|val|PERSISTENT\n")
 
 	s2 := storage.NewStorage(mockWal)
-	if err := s2.Load(); err != nil {
+	if err := loadStorage(mockWal, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestStorage_RealWALRecovery(t *testing.T) {
 	}
 	defer w.CloseWal()
 
-	s1 := storage.NewStorage(w)
+	s1 := newStorageWithWal(w)
 	s1.Set("k1", []byte("v1"), storage.NewPayloadMetadata(time.Now(), nil))
 	s1.SetWithTTL("k2", []byte("v2"), 1*time.Hour)
 	s1.Delete("k1")
@@ -235,8 +235,8 @@ func TestStorage_RealWALRecovery(t *testing.T) {
 	}
 	defer w2.CloseWal()
 
-	s2 := storage.NewStorage(w2)
-	if err := s2.Load(); err != nil {
+	s2 := newStorageWithWal(w2)
+	if err := loadStorage(w2, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 

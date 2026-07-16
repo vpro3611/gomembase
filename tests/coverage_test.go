@@ -3,7 +3,9 @@ package tests
 import (
 	"container/heap"
 	"errors"
+	"io"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -78,7 +80,7 @@ func TestStorage_LoadFromSnapshot_NotExists(t *testing.T) {
 	snap := snapshot.NewSnapshot("non_existent_snapshot.snap")
 
 	// Should not return error if file doesn't exist
-	err := s.LoadFromSnapshot(&snap)
+	err := loadStorageWithSnapshot(mockWal, &snap, s)
 	if err != nil {
 		t.Errorf("expected nil error for missing snapshot, got %v", err)
 	}
@@ -155,7 +157,9 @@ func TestWal_TruncateSuccess(t *testing.T) {
 
 func TestSnapshot_SaveErrorPaths(t *testing.T) {
 	s := snapshot.NewSnapshot("??invalid??")
-	err := s.Save(map[string]storage.Payload{"k": storage.NewPayload([]byte("v"), storage.NewPayloadMetadata(time.Now(), nil))})
+	err := s.Save(map[string]func(w io.Writer) error{
+		"kv": func(w io.Writer) error { return nil },
+	})
 	if err == nil {
 		t.Error("expected error when saving to invalid path, got nil")
 	}
@@ -283,12 +287,14 @@ func TestStorage_CleanupExpired_Multiple(t *testing.T) {
 func TestStorage_SaveSnapshot_TruncateFail(t *testing.T) {
 	mockWal := &MockWal{}
 	mockWal.SetFailTruncate(true)
-	s := storage.NewStorage(mockWal)
 	snapPath := "test_save_truncate_fail.snap"
 	defer os.Remove(snapPath)
 	snap := snapshot.NewSnapshot(snapPath)
+	pm := persistence.NewPersistenceManager(mockWal, &snap)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
-	err := s.SaveSnapshot(&snap)
+	err := pm.SaveSnapshot()
 	if err == nil {
 		t.Error("expected error when WAL truncate fails, got nil")
 	}

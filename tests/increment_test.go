@@ -67,7 +67,7 @@ func TestStorage_Increment_Expired(t *testing.T) {
 	// Verify WAL deletion (user asked if we should write to wal deletion)
 	foundDelete := false
 	for _, entry := range mockWal.Writes() {
-		if entry == "DELETE|expired_counter\n" {
+		if entry == "kv|DELETE|expired_counter\n" {
 			foundDelete = true
 			break
 		}

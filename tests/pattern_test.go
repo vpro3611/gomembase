@@ -207,7 +207,7 @@ func TestStorage_PatternTTLBehavior(t *testing.T) {
 	// Verify that "DELETE|user:expired\n" was written to the WAL
 	var foundExpiredDelete bool
 	for _, w := range mockWal.Writes() {
-		if w == "DELETE|user:expired\n" {
+		if w == "kv|DELETE|user:expired\n" {
 			foundExpiredDelete = true
 			break
 		}
@@ -230,7 +230,7 @@ func TestStorage_PatternWALRecovery(t *testing.T) {
 		t.Fatalf("failed to create WAL: %v", err)
 	}
 
-	s1 := storage.NewStorage(w)
+	s1 := newStorageWithWal(w)
 	_ = s1.Set("user:1", []byte("val1"), storage.NewPayloadMetadata(time.Now(), nil))
 	_ = s1.Set("user:2", []byte("val2"), storage.NewPayloadMetadata(time.Now(), nil))
 	_ = s1.Set("other:1", []byte("val3"), storage.NewPayloadMetadata(time.Now(), nil))
@@ -247,8 +247,8 @@ func TestStorage_PatternWALRecovery(t *testing.T) {
 	}
 	defer w2.CloseWal()
 
-	s2 := storage.NewStorage(w2)
-	if err := s2.Load(); err != nil {
+	s2 := newStorageWithWal(w2)
+	if err := loadStorage(w2, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 

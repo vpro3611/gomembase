@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"testing"
 	"time"
@@ -8,7 +9,9 @@ import (
 
 func TestStorage_FullLifecycle_ResetPersistence(t *testing.T) {
 	mockWal := &MockWal{}
-	s := storage.NewStorage(mockWal)
+	pm := persistence.NewPersistenceManager(mockWal, nil)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
 	// 1. Set initial data
 	s.Set("key1", []byte("val1"), storage.NewPayloadMetadata(time.Now(), nil))
@@ -32,15 +35,15 @@ func TestStorage_FullLifecycle_ResetPersistence(t *testing.T) {
 
 	// 2. Simulate recovery check - it should find keys
 	s2 := storage.NewStorage(mockWal)
-	if err := s2.Load(); err != nil {
+	if err := loadStorage(mockWal, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 	if !s2.Exists("key1") {
 		t.Error("Recovered storage should have key1")
 	}
 
-	// 3. Reset original storage
-	if err := s.Reset(); err != nil {
+	// 3. Reset original storage via PersistenceManager
+	if err := pm.Reset(); err != nil {
 		t.Fatalf("Reset failed: %v", err)
 	}
 
@@ -51,7 +54,7 @@ func TestStorage_FullLifecycle_ResetPersistence(t *testing.T) {
 
 	// 5. Try to recover into a new storage again - it should be empty now
 	s3 := storage.NewStorage(mockWal)
-	if err := s3.Load(); err != nil {
+	if err := loadStorage(mockWal, s3); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 	if s3.Exists("key1") {

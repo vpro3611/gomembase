@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"testing"
 	"time"
@@ -8,7 +9,9 @@ import (
 
 func TestStorage_Reset(t *testing.T) {
 	mockWal := &MockWal{}
-	s := storage.NewStorage(mockWal)
+	pm := persistence.NewPersistenceManager(mockWal, nil)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
 	// Setup initial state
 	s.Set("key1", []byte("val1"), storage.NewPayloadMetadata(time.Now(), nil))
@@ -21,8 +24,8 @@ func TestStorage_Reset(t *testing.T) {
 		t.Fatal("WAL should have entries before Reset")
 	}
 
-	// Perform Reset
-	if err := s.Reset(); err != nil {
+	// Perform Reset via PersistenceManager
+	if err := pm.Reset(); err != nil {
 		t.Fatalf("Reset failed: %v", err)
 	}
 
@@ -48,14 +51,16 @@ func TestStorage_Reset(t *testing.T) {
 
 func TestStorage_Clear(t *testing.T) {
 	mockWal := &MockWal{}
-	s := storage.NewStorage(mockWal)
+	pm := persistence.NewPersistenceManager(mockWal, nil)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
 	// Setup initial state
 	s.Set("key1", []byte("val1"), storage.NewPayloadMetadata(time.Now(), nil))
 	s.SetWithTTL("key2", []byte("val2"), 1*time.Hour)
 
-	// Perform Clear
-	if err := s.Clear(); err != nil {
+	// Perform Clear via PersistenceManager
+	if err := pm.Clear(); err != nil {
 		t.Fatalf("Clear failed: %v", err)
 	}
 
@@ -78,7 +83,9 @@ func TestStorage_Clear(t *testing.T) {
 
 func TestStorage_ResetClear_Concurrency(t *testing.T) {
 	mockWal := &MockWal{}
-	s := storage.NewStorage(mockWal)
+	pm := persistence.NewPersistenceManager(mockWal, nil)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
 	done := make(chan bool)
 	go func() {
@@ -91,13 +98,12 @@ func TestStorage_ResetClear_Concurrency(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 10; i++ {
-			s.Reset()
-			s.Clear()
+			pm.Reset()
+			pm.Clear()
 		}
 		done <- true
 	}()
 
 	<-done
 	<-done
-	// If it doesn't panic/deadlock, it's a good sign for basic mutex usage
 }
