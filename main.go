@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -20,17 +21,14 @@ func main() {
 		}
 	}(w)
 
-	s := storage.NewStorage(w)
 	snap := snapshot.NewSnapshot("test.rdb")
-	s.AddSnapshotter(&snap) // Register it so Reset/Clear can find it
 
-	// 1. Load from snapshot first
-	if err := s.LoadFromSnapshot(&snap); err != nil {
-		panic(err)
-	}
+	pm := persistence.NewPersistenceManager(w, &snap)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
-	// 2. Load from WAL later than snapshot
-	if err := s.Load(); err != nil {
+	// Restore state (snapshot + WAL)
+	if err := pm.Restore(nil); err != nil {
 		panic(err)
 	}
 
@@ -48,7 +46,7 @@ func main() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := s.SaveSnapshot(&snap); err != nil {
+			if err := pm.SaveSnapshot(); err != nil {
 				// Log error instead of panicking in goroutine
 				println("Snapshot save failed:", err.Error())
 			}
