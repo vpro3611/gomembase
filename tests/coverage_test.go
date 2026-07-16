@@ -3,7 +3,9 @@ package tests
 import (
 	"container/heap"
 	"errors"
+	"io"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -78,7 +80,7 @@ func TestStorage_LoadFromSnapshot_NotExists(t *testing.T) {
 	snap := snapshot.NewSnapshot("non_existent_snapshot.snap")
 
 	// Should not return error if file doesn't exist
-	err := s.LoadFromSnapshot(&snap)
+	err := loadStorageWithSnapshot(mockWal, &snap, s)
 	if err != nil {
 		t.Errorf("expected nil error for missing snapshot, got %v", err)
 	}
@@ -155,7 +157,9 @@ func TestWal_TruncateSuccess(t *testing.T) {
 
 func TestSnapshot_SaveErrorPaths(t *testing.T) {
 	s := snapshot.NewSnapshot("??invalid??")
-	err := s.Save(map[string]storage.Payload{"k": storage.NewPayload([]byte("v"), storage.NewPayloadMetadata(time.Now(), nil))})
+	err := s.Save(map[string]func(w io.Writer) error{
+		"kv": func(w io.Writer) error { return nil },
+	})
 	if err == nil {
 		t.Error("expected error when saving to invalid path, got nil")
 	}
@@ -171,34 +175,58 @@ func TestErrors_FormattingAndUnwrap(t *testing.T) {
 
 	t.Run("KeyError", func(t *testing.T) {
 		ke := pkgerrors.KeyError{Key: "k", Err: baseErr}
-		expected := "key k: base"
+		expected := "key error: key \"k\": base"
 		if ke.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, ke.Error())
 		}
 		if errors.Unwrap(ke) != baseErr {
 			t.Error("failed to unwrap KeyError")
 		}
+		// Test extra rich fields
+		keRich := pkgerrors.KeyError{Key: "k", Err: pkgerrors.KeyNotFoundError, Operation: "GET"}
+		expectedRich := "key error: key \"k\": during GET: key was not found"
+		if keRich.Error() != expectedRich {
+			t.Errorf("expected %s, got %s", expectedRich, keRich.Error())
+		}
+		if keRich.ErrorCode() != pkgerrors.CodeKeyNotFound {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeKeyNotFound, keRich.ErrorCode())
+		}
+		if keRich.HTTPStatus() != 404 {
+			t.Errorf("expected HTTP status 404, got %d", keRich.HTTPStatus())
+		}
 	})
 
 	t.Run("WalError", func(t *testing.T) {
 		we := pkgerrors.WalError{Path: "p", Err: baseErr}
-		expected := "wal error (p) : base"
+		expected := "wal error at path \"p\": base"
 		if we.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, we.Error())
 		}
 		if errors.Unwrap(we) != baseErr {
 			t.Error("failed to unwrap WalError")
 		}
+		if we.ErrorCode() != pkgerrors.CodeWalError {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeWalError, we.ErrorCode())
+		}
+		if we.HTTPStatus() != 500 {
+			t.Errorf("expected HTTP status 500, got %d", we.HTTPStatus())
+		}
 	})
 
 	t.Run("SnapshotError", func(t *testing.T) {
 		se := pkgerrors.SnapshotError{Path: "p", Err: baseErr}
-		expected := "snapshot error (p): base"
+		expected := "snapshot error at path \"p\": base"
 		if se.Error() != expected {
 			t.Errorf("expected %s, got %s", expected, se.Error())
 		}
 		if errors.Unwrap(se) != baseErr {
 			t.Error("failed to unwrap SnapshotError")
+		}
+		if se.ErrorCode() != pkgerrors.CodeSnapshotError {
+			t.Errorf("expected code %s, got %s", pkgerrors.CodeSnapshotError, se.ErrorCode())
+		}
+		if se.HTTPStatus() != 500 {
+			t.Errorf("expected HTTP status 500, got %d", se.HTTPStatus())
 		}
 
 		seEmpty := pkgerrors.SnapshotError{Err: baseErr}
@@ -259,16 +287,18 @@ func TestStorage_CleanupExpired_Multiple(t *testing.T) {
 func TestStorage_SaveSnapshot_TruncateFail(t *testing.T) {
 	mockWal := &MockWal{}
 	mockWal.SetFailTruncate(true)
-	s := storage.NewStorage(mockWal)
 	snapPath := "test_save_truncate_fail.snap"
 	defer os.Remove(snapPath)
 	snap := snapshot.NewSnapshot(snapPath)
+	pm := persistence.NewPersistenceManager(mockWal, &snap)
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
 
-	err := s.SaveSnapshot(&snap)
+	err := pm.SaveSnapshot()
 	if err == nil {
 		t.Error("expected error when WAL truncate fails, got nil")
 	}
-	if err.Error() != "wal truncate failed" {
-		t.Errorf("expected 'wal truncate failed', got %v", err)
+	if !errors.Is(err, ErrMockTruncateFailed) {
+		t.Errorf("expected ErrMockTruncateFailed, got %v", err)
 	}
 }

@@ -1,14 +1,13 @@
 package snapshot
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
-	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"io"
 	"os"
-	"time"
 )
 
 var (
@@ -150,11 +149,11 @@ func (s *Snapshot) SHeader() SnapshotHeader {
 	return s.sHeader
 }
 
-func (s *Snapshot) Save(data map[string]storage.Payload) error {
+func (s *Snapshot) Save(sections map[string]func(w io.Writer) error) error {
 	tmpPath := s.path + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to create temporary snapshot file: %w", err)}
+		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to create temporary snapshot file: %w", err), Operation: "CREATE"}
 	}
 
 	defer func() {
@@ -164,131 +163,107 @@ func (s *Snapshot) Save(data map[string]storage.Payload) error {
 		}
 	}()
 
-	if err = s.SaveSnapshot(f, data); err != nil {
+	if err = s.SaveSnapshot(f, sections); err != nil {
 		return err
 	}
 
 	if err = f.Sync(); err != nil {
-		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to sync snapshot file: %w", err)}
+		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to sync snapshot file: %w", err), Operation: "SYNC"}
 	}
 
 	if err = f.Close(); err != nil {
-		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to close snapshot file: %w", err)}
+		return pkgerrors.SnapshotError{Path: tmpPath, Err: fmt.Errorf("failed to close snapshot file: %w", err), Operation: "CLOSE"}
 	}
 
 	if err = os.Rename(tmpPath, s.path); err != nil {
-		return pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to rename snapshot file: %w", err)}
+		return pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to rename snapshot file: %w", err), Operation: "RENAME"}
 	}
 
 	return nil
 }
 
-func (s *Snapshot) Load() (map[string]storage.Payload, error) {
+func (s *Snapshot) Delete() error {
+	err := os.Remove(s.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to delete snapshot file: %w", err), Operation: "DELETE"}
+	}
+	return nil
+}
+
+func (s *Snapshot) Load(deserialize func(engineID string, r io.Reader) error) error {
 	f, err := os.Open(s.path)
 	if err != nil {
-		return nil, pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to open snapshot file: %w", err)}
+		return pkgerrors.SnapshotError{Path: s.path, Err: fmt.Errorf("failed to open snapshot file: %w", err), Operation: "OPEN"}
 	}
 	defer f.Close()
 
-	return s.LoadSnapshot(f)
+	return s.LoadSnapshot(f, deserialize)
 }
 
-func (s *Snapshot) SaveSnapshot(w io.Writer, data map[string]storage.Payload) error {
-	// header = bytes[4] + version as a uint16 + count as a uint64
-	if err := WriteHeader(w, uint64(len(data))); err != nil {
-		return pkgerrors.SnapshotError{Path: s.path, Err: err}
+func (s *Snapshot) SaveSnapshot(w io.Writer, sections map[string]func(w io.Writer) error) error {
+	if err := WriteHeader(w, uint64(len(sections))); err != nil {
+		return pkgerrors.SnapshotError{Path: s.path, Err: err, Operation: "SAVE"}
 	}
 
-	// ENTRIES
-
-	for key, payload := range data {
-
-		// KEY
-		if err := WriteBytes(w, []byte(key)); err != nil {
-			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
+	for engineID, serialize := range sections {
+		if err := WriteBytes(w, []byte(engineID)); err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err), Operation: "WRITE"}
 		}
 
-		// VALUE
-		if err := WriteBytes(w, payload.Value()); err != nil {
-			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
+		var buf bytes.Buffer
+		if err := serialize(&buf); err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err), Operation: "WRITE"}
 		}
 
-		// METADATA CREATED AT
-		if err := WriteInt64Value(w, payload.Metadata().CreatedAt().UnixNano()); err != nil {
-			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
+		if err := WriteUintValue(w, uint64(buf.Len())); err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err), Operation: "WRITE"}
 		}
 
-		// METADATA EXPIRES AT
-
-		if payload.Metadata().ExpiresAt() == nil {
-			if err := WriteUintValue[uint8](w, uint8(0)); err != nil {
-				return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
-			}
-		} else {
-			if err := WriteUintValue[uint8](w, uint8(1)); err != nil {
-				return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
-			}
-			if err := WriteInt64Value(w, payload.Metadata().ExpiresAt().UnixNano()); err != nil {
-				return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err)}
-			}
+		if _, err := w.Write(buf.Bytes()); err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotWriteFailed, err), Operation: "WRITE"}
 		}
 	}
 	return nil
 }
 
-func (s *Snapshot) LoadSnapshot(r io.Reader) (map[string]storage.Payload, error) {
+func (s *Snapshot) LoadSnapshot(r io.Reader, deserialize func(engineID string, r io.Reader) error) error {
 	header, err := ReadSnapshotHeader(r)
 	if err != nil {
-		return nil, pkgerrors.SnapshotError{Path: s.path, Err: err}
+		return pkgerrors.SnapshotError{Path: s.path, Err: err, Operation: "LOAD"}
 	}
 
 	if err := header.Validate(); err != nil {
-		return nil, pkgerrors.SnapshotError{Path: s.path, Err: err}
+		return pkgerrors.SnapshotError{Path: s.path, Err: err, Operation: "LOAD"}
 	}
 
+	s.sHeader = header
 	count := header.count
 
-	data := make(map[string]storage.Payload, count)
-
 	for i := uint64(0); i < count; i++ {
-
-		// KEY
-		keyBytes, err := ReadBytes(r)
+		engineIDBytes, err := ReadBytes(r)
 		if err != nil {
-			return nil, pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err)}
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err), Operation: "READ"}
+		}
+		engineID := string(engineIDBytes)
+
+		sectionLen, err := ReadUintValue[uint64](r)
+		if err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err), Operation: "READ"}
 		}
 
-		// VALUE
-		valueBytes, err := ReadBytes(r)
-		if err != nil {
-			return nil, pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err)}
+		limitReader := io.LimitReader(r, int64(sectionLen))
+
+		if err := deserialize(engineID, limitReader); err != nil {
+			return pkgerrors.SnapshotError{Path: s.path, Err: err, Operation: "LOAD"}
 		}
 
-		// METADATA CREATED AT
-		createdAtNano, err := ReadInt64Value(r)
-		if err != nil {
-			return nil, pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err)}
-		}
-
-		// HAS EXPIRY METADATA
-		hasExpiry, err := ReadUintValue[uint8](r)
-		if err != nil {
-			return nil, pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err)}
-		}
-
-		var expires *time.Time
-
-		if hasExpiry == 1 {
-			expiresNano, err := ReadInt64Value(r)
-			if err != nil {
-				return nil, pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err)}
+		remaining := limitReader.(*io.LimitedReader).N
+		if remaining > 0 {
+			if _, err := io.CopyN(io.Discard, r, remaining); err != nil {
+				return pkgerrors.SnapshotError{Path: s.path, Err: errors.Join(pkgerrors.ErrSnapshotReadFailed, err), Operation: "READ"}
 			}
-			t := time.Unix(0, expiresNano)
-			expires = &t
 		}
-
-		metadata := storage.NewPayloadMetadata(time.Unix(0, createdAtNano), expires)
-		data[string(keyBytes)] = storage.NewPayload(valueBytes, metadata)
 	}
-	return data, nil
+
+	return nil
 }

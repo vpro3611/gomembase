@@ -17,8 +17,8 @@ func TestSnapshot_WalIntegration(t *testing.T) {
 	defer os.Remove(snapPath)
 
 	w, _ := wal.NewWal(walPath)
-	s := storage.NewStorage(w)
 	snap := snapshot.NewSnapshot(snapPath)
+	s, pm := newStorageWithWalAndSnap(w, &snap)
 
 	// 1. Set some data
 	now := time.Now()
@@ -26,7 +26,7 @@ func TestSnapshot_WalIntegration(t *testing.T) {
 	s.Set("k2", []byte("v2"), storage.NewPayloadMetadata(now, nil))
 
 	// 2. Save snapshot (should truncate WAL)
-	if err := s.SaveSnapshot(&snap); err != nil {
+	if err := pm.SaveSnapshot(); err != nil {
 		t.Fatalf("SaveSnapshot failed: %v", err)
 	}
 
@@ -42,13 +42,10 @@ func TestSnapshot_WalIntegration(t *testing.T) {
 	// 4. Simulate restart: New storage, load snapshot then WAL
 	w2, _ := wal.NewWal(walPath)
 	defer w2.CloseWal()
-	s2 := storage.NewStorage(w2)
+	s2, pm2 := newStorageWithWalAndSnap(w2, &snap)
 
-	if err := s2.LoadFromSnapshot(&snap); err != nil {
-		t.Fatalf("LoadFromSnapshot failed: %v", err)
-	}
-	if err := s2.Load(); err != nil {
-		t.Fatalf("Load failed: %v", err)
+	if err := pm2.Restore(nil); err != nil {
+		t.Fatalf("Recovery failed: %v", err)
 	}
 
 	// 5. Verify all data is present
@@ -73,7 +70,7 @@ func TestWal_BinaryData(t *testing.T) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	s := storage.NewStorage(w)
+	s := newStorageWithWal(w)
 
 	// Binary data with delimiters and newlines
 	key := "binary_key"
@@ -88,9 +85,9 @@ func TestWal_BinaryData(t *testing.T) {
 
 	w2, _ := wal.NewWal(walPath)
 	defer w2.CloseWal()
-	s2 := storage.NewStorage(w2)
+	s2 := newStorageWithWal(w2)
 
-	if err := s2.Load(); err != nil {
+	if err := loadStorage(w2, s2); err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 

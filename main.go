@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/vpro3611/gomembase.git/pkg/list_storage"
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -20,16 +22,18 @@ func main() {
 		}
 	}(w)
 
-	s := storage.NewStorage(w)
 	snap := snapshot.NewSnapshot("test.rdb")
 
-	// 1. Load from snapshot first
-	if err := s.LoadFromSnapshot(&snap); err != nil {
-		panic(err)
-	}
+	pm := persistence.NewPersistenceManager(w, &snap)
 
-	// 2. Load from WAL later than snapshot
-	if err := s.Load(); err != nil {
+	s := storage.NewStorage(pm)
+	pm.RegisterEngine(s)
+
+	listEng := list_storage.NewListStorage(pm)
+	pm.RegisterEngine(listEng)
+
+	// Restore state (snapshot + WAL)
+	if err := pm.Restore(nil); err != nil {
 		panic(err)
 	}
 
@@ -39,6 +43,7 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			s.CleanupExpired()
+			listEng.CleanupExpired()
 		}
 	}()
 
@@ -47,7 +52,7 @@ func main() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := s.SaveSnapshot(&snap); err != nil {
+			if err := pm.SaveSnapshot(); err != nil {
 				// Log error instead of panicking in goroutine
 				println("Snapshot save failed:", err.Error())
 			}
