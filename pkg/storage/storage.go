@@ -3,14 +3,12 @@ package storage
 import (
 	"container/heap"
 	"encoding/base64"
-	"errors"
-	"fmt"
 	pkgerrors "github.com/vpro3611/gomembase.git/pkg/errors"
-	"github.com/vpro3611/gomembase.git/pkg/wal"
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
+	"github.com/vpro3611/gomembase.git/pkg/snapshot"
+	"io"
 	"net/url"
-	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,11 +44,10 @@ type StorageInterface interface {
 }
 
 type Storage struct {
-	wal           wal.WalInterface
+	walLogger     persistence.WalLogger
 	data          map[string]Payload
 	expirations   ExpirationHeap
 	expirationMap map[string]*ExpirationEntry
-	snapshots     []Snapshotter
 	mutex         sync.RWMutex
 }
 
@@ -73,15 +70,7 @@ func (s *Storage) CountBySuffix(suffix string) int64 {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -112,15 +101,7 @@ func (s *Storage) CountByRegex(regex string) (int64, error) {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -146,15 +127,7 @@ func (s *Storage) CountByPrefix(prefix string) int64 {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -180,15 +153,7 @@ func (s *Storage) FindBySuffix(suffix string) map[string][]byte {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -219,15 +184,7 @@ func (s *Storage) FindByRegex(regex string) (map[string][]byte, error) {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -253,15 +210,7 @@ func (s *Storage) FindByPrefix(prefix string) map[string][]byte {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
@@ -280,13 +229,13 @@ func (s *Storage) deleteBySuffixNoLock(suffix string) int64 {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if strings.HasSuffix(k, suffix) {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
 				break
 			}
 			s.deleteNoLock(k)
@@ -313,13 +262,13 @@ func (s *Storage) deleteByRegexNoLock(re *regexp.Regexp) (int64, error) {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if re.MatchString(k) {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
 				return count, err
 			}
 			s.deleteNoLock(k)
@@ -341,13 +290,13 @@ func (s *Storage) deleteByPrefixNoLock(prefix string) int64 {
 
 	for k, v := range s.data {
 		if v.metadata.IsExpired() {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err == nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err == nil {
 				s.deleteNoLock(k)
 			}
 			continue
 		}
 		if strings.HasPrefix(k, prefix) {
-			if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(k) + "\n"); err != nil {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(k)); err != nil {
 				break
 			}
 			s.deleteNoLock(k)
@@ -368,14 +317,7 @@ func (s *Storage) resetNoLock() error {
 	s.data = make(map[string]Payload)
 	s.expirations = make(ExpirationHeap, 0)
 	s.expirationMap = make(map[string]*ExpirationEntry)
-
-	for _, snap := range s.snapshots {
-		if err := snap.Delete(); err != nil {
-			return err
-		}
-	}
-
-	return s.wal.TruncateWal()
+	return nil
 }
 
 func (s *Storage) Clear() error {
@@ -389,14 +331,7 @@ func (s *Storage) clearNoLock() error {
 	clear(s.data)
 	s.expirations = make(ExpirationHeap, 0)
 	clear(s.expirationMap)
-
-	for _, snap := range s.snapshots {
-		if err := snap.Delete(); err != nil {
-			return err
-		}
-	}
-
-	return s.wal.TruncateWal()
+	return nil
 }
 
 func (s *Storage) DecrementBy(key string, amount int64) (int64, error) {
@@ -435,7 +370,7 @@ func (s *Storage) incrementByNoLock(key string, amount int64) (int64, error) {
 	}
 
 	if payload.metadata.IsExpired() {
-		if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
+		if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err == nil {
 			s.deleteNoLock(key)
 		}
 		return 0, pkgerrors.KeyError{Key: key, Err: pkgerrors.KeyExpiredError, Operation: op}
@@ -461,8 +396,7 @@ func (s *Storage) incrementByNoLock(key string, amount int64) (int64, error) {
 		expiresStr = payload.metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(newValueBytes)
-	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", url.PathEscape(key), encodedValue, expiresStr)
-	if _, err := s.wal.WriteToWal(walEntry); err != nil {
+	if err := s.walLogger.Log("kv", "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
 		return 0, err
 	}
 
@@ -492,33 +426,20 @@ func (s *Storage) Mget(keys []string) (map[string][]byte, error) {
 
 	if len(expiredKeys) > 0 {
 		s.mutex.RUnlock()
-		s.mutex.Lock()
-		for _, key := range expiredKeys {
-			if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
-				if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err == nil {
-					s.deleteNoLock(key)
-				}
-			}
-		}
-		s.mutex.Unlock()
+		s.deleteExpiredKeys(expiredKeys)
 		s.mutex.RLock()
 	}
 
 	return result, nil
 }
 
-func NewStorage(w wal.WalInterface) *Storage {
+func NewStorage(logger persistence.WalLogger) *Storage {
 	return &Storage{
-		wal:           w,
+		walLogger:     logger,
 		data:          make(map[string]Payload),
 		expirations:   make(ExpirationHeap, 0),
 		expirationMap: make(map[string]*ExpirationEntry),
-		snapshots:     make([]Snapshotter, 0),
 	}
-}
-
-func (s *Storage) Wal() wal.WalInterface {
-	return s.wal
 }
 
 func (s *Storage) Data() map[string]Payload {
@@ -531,26 +452,6 @@ func (s *Storage) Expirations() ExpirationHeap {
 
 func (s *Storage) ExpirationMap() map[string]*ExpirationEntry {
 	return s.expirationMap
-}
-
-func (s *Storage) AddSnapshotter(snap Snapshotter) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	s.addSnapshotterNoLock(snap)
-}
-
-func (s *Storage) addSnapshotterNoLock(snap Snapshotter) {
-	s.snapshots = append(s.snapshots, snap)
-}
-
-func (s *Storage) Snapshots() []Snapshotter {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	return s.snapshotsNoLock()
-}
-
-func (s *Storage) snapshotsNoLock() []Snapshotter {
-	return slices.Clone(s.snapshots)
 }
 
 func (s *Storage) Set(key string, value []byte, metadata PayloadMetadata) error {
@@ -602,8 +503,7 @@ func (s *Storage) setNoLock(key string, value []byte, metadata PayloadMetadata) 
 		expiresStr = metadata.expiresAt.Format(time.RFC3339)
 	}
 	encodedValue := base64.StdEncoding.EncodeToString(value)
-	walEntry := fmt.Sprintf("SET|%s|%s|%s\n", url.PathEscape(key), encodedValue, expiresStr)
-	if _, err := s.wal.WriteToWal(walEntry); err != nil {
+	if err := s.walLogger.Log("kv", "SET", url.PathEscape(key), encodedValue, expiresStr); err != nil {
 		return err
 	}
 	return nil
@@ -657,7 +557,7 @@ func (s *Storage) Delete(key string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if _, err := s.wal.WriteToWal("DELETE|" + url.PathEscape(key) + "\n"); err != nil {
+	if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err != nil {
 		return err
 	}
 
@@ -708,133 +608,181 @@ func (s *Storage) cleanupExpiredNoLock() {
 	}
 }
 
-// Snapshotter interface to avoid circular dependency
-type Snapshotter interface {
-	Load() (map[string]Payload, error)
-	Save(data map[string]Payload) error
-	Delete() error
-}
-
-func (s *Storage) LoadFromSnapshot(snap Snapshotter) error {
+func (s *Storage) deleteExpiredKeys(keys []string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-
-	return s.loadFromSnapshotNoLock(snap)
+	for _, key := range keys {
+		if payload, ok := s.data[key]; ok && payload.metadata.IsExpired() {
+			if err := s.walLogger.Log("kv", "DELETE", url.PathEscape(key)); err == nil {
+				s.deleteNoLock(key)
+			}
+		}
+	}
 }
 
-func (s *Storage) loadFromSnapshotNoLock(snap Snapshotter) error {
-	data, err := snap.Load()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file or directory") {
+// EngineID implements persistence.Engine
+func (s *Storage) EngineID() string {
+	return "kv"
+}
+
+// ProcessWalEntry implements persistence.Engine
+func (s *Storage) ProcessWalEntry(action string, args []string) error {
+	switch action {
+	case "DELETE":
+		if len(args) < 1 {
 			return nil
 		}
-		return err
-	}
+		key, err := url.PathUnescape(args[0])
+		if err != nil {
+			key = args[0]
+		}
+		s.deleteNoLock(key)
+	case "SET":
+		if len(args) < 3 {
+			return nil
+		}
+		key, err := url.PathUnescape(args[0])
+		if err != nil {
+			key = args[0]
+		}
+		value, err := base64.StdEncoding.DecodeString(args[1])
+		if err != nil {
+			value = []byte(args[1])
+		}
+		expiresStr := args[2]
 
-	for k, v := range data {
-		if v.metadata.IsExpired() {
-			continue
-		}
-		s.data[k] = v
-		if oldEntry, ok := s.expirationMap[k]; ok {
-			heap.Remove(&s.expirations, oldEntry.index)
-			delete(s.expirationMap, k)
-		}
-		if v.metadata.expiresAt != nil {
-			entry := &ExpirationEntry{
-				key:       k,
-				expiresAt: *v.metadata.expiresAt,
+		var expiresAt *time.Time
+		if expiresStr != "PERSISTENT" {
+			t, err := time.Parse(time.RFC3339, expiresStr)
+			if err != nil {
+				return nil
 			}
+			if t.Before(time.Now()) {
+				return nil
+			}
+			expiresAt = &t
+		}
+
+		s.data[key] = Payload{
+			value: value,
+			metadata: PayloadMetadata{
+				createdAt: time.Now(),
+				expiresAt: expiresAt,
+			},
+		}
+
+		if oldEntry, ok := s.expirationMap[key]; ok {
+			heap.Remove(&s.expirations, oldEntry.index)
+			delete(s.expirationMap, key)
+		}
+
+		if expiresAt != nil {
+			entry := &ExpirationEntry{key: key, expiresAt: *expiresAt}
 			heap.Push(&s.expirations, entry)
-			s.expirationMap[k] = entry
+			s.expirationMap[key] = entry
 		}
 	}
 	return nil
 }
 
-func (s *Storage) SaveSnapshot(snap Snapshotter) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+// SerializeState implements persistence.Engine
+func (s *Storage) SerializeState(w io.Writer) error {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 
-	return s.saveSnapshotNoLock(snap)
-}
-
-func (s *Storage) saveSnapshotNoLock(snap Snapshotter) error {
-	if err := snap.Save(s.data); err != nil {
+	if err := snapshot.WriteUintValue(w, uint64(len(s.data))); err != nil {
 		return err
 	}
 
-	return s.wal.TruncateWal()
+	for key, payload := range s.data {
+		if err := snapshot.WriteBytes(w, []byte(key)); err != nil {
+			return err
+		}
+
+		if err := snapshot.WriteBytes(w, payload.value); err != nil {
+			return err
+		}
+
+		if err := snapshot.WriteInt64Value(w, payload.metadata.createdAt.UnixNano()); err != nil {
+			return err
+		}
+
+		if payload.metadata.expiresAt == nil {
+			if err := snapshot.WriteUintValue[uint8](w, uint8(0)); err != nil {
+				return err
+			}
+		} else {
+			if err := snapshot.WriteUintValue[uint8](w, uint8(1)); err != nil {
+				return err
+			}
+			if err := snapshot.WriteInt64Value(w, payload.metadata.expiresAt.UnixNano()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-func (s *Storage) Load() error {
+// DeserializeState implements persistence.Engine
+func (s *Storage) DeserializeState(r io.Reader) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	return s.loadNoLock()
-}
+	count, err := snapshot.ReadUintValue[uint64](r)
+	if err != nil {
+		return err
+	}
 
-func (s *Storage) loadNoLock() error {
-	return s.wal.RecoverFromWal(func(line string) error {
-		parts := strings.Split(line, "|")
-		if len(parts) < 2 {
-			return nil
-		}
+	s.clearNoLock()
 
-		action := parts[0]
-		escapedKey := parts[1]
-		key, err := url.PathUnescape(escapedKey)
+	for i := uint64(0); i < count; i++ {
+		keyBytes, err := snapshot.ReadBytes(r)
 		if err != nil {
-			key = escapedKey
+			return err
+		}
+		key := string(keyBytes)
+
+		valueBytes, err := snapshot.ReadBytes(r)
+		if err != nil {
+			return err
 		}
 
-		switch action {
-		case "DELETE":
-			s.deleteNoLock(key)
-		case "SET":
-			if len(parts) < 4 {
-				return nil
-			}
-			value, err := base64.StdEncoding.DecodeString(parts[2])
+		createdAtNano, err := snapshot.ReadInt64Value(r)
+		if err != nil {
+			return err
+		}
+
+		hasExpiry, err := snapshot.ReadUintValue[uint8](r)
+		if err != nil {
+			return err
+		}
+
+		var expires *time.Time
+		if hasExpiry == 1 {
+			expiresNano, err := snapshot.ReadInt64Value(r)
 			if err != nil {
-				// Fallback to raw string if base64 decoding fails (for backward compatibility)
-				// or just log/skip if it's strictly enforced.
-				// For now, let's assume it should be decoded.
-				value = []byte(parts[2])
+				return err
 			}
-			expiresStr := parts[3]
-
-			var expiresAt *time.Time
-			if expiresStr != "PERSISTENT" {
-				t, err := time.Parse(time.RFC3339, expiresStr)
-				if err != nil {
-					return nil
-				}
-				if t.Before(time.Now()) {
-					return nil
-				}
-				expiresAt = &t
-			}
-
-			s.data[key] = Payload{
-				value: value,
-				metadata: PayloadMetadata{
-					createdAt: time.Now(),
-					expiresAt: expiresAt,
-				},
-			}
-
-			if oldEntry, ok := s.expirationMap[key]; ok {
-				heap.Remove(&s.expirations, oldEntry.index)
-				delete(s.expirationMap, key)
-			}
-
-			if expiresAt != nil {
-				entry := &ExpirationEntry{key: key, expiresAt: *expiresAt}
-				heap.Push(&s.expirations, entry)
-				s.expirationMap[key] = entry
-			}
+			t := time.Unix(0, expiresNano)
+			expires = &t
 		}
-		return nil
-	})
+
+		s.data[key] = Payload{
+			value: valueBytes,
+			metadata: PayloadMetadata{
+				createdAt: time.Unix(0, createdAtNano),
+				expiresAt: expires,
+			},
+		}
+
+		if expires != nil {
+			entry := &ExpirationEntry{
+				key:       key,
+				expiresAt: *expires,
+			}
+			heap.Push(&s.expirations, entry)
+			s.expirationMap[key] = entry
+		}
+	}
+	return nil
 }
