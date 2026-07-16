@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/vpro3611/gomembase.git/pkg/list_storage"
 	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
@@ -24,8 +25,12 @@ func main() {
 	snap := snapshot.NewSnapshot("test.rdb")
 
 	pm := persistence.NewPersistenceManager(w, &snap)
+
 	s := storage.NewStorage(pm)
 	pm.RegisterEngine(s)
+
+	listEng := list_storage.NewListStorage(pm)
+	pm.RegisterEngine(listEng)
 
 	// Restore state (snapshot + WAL)
 	if err := pm.Restore(nil); err != nil {
@@ -38,6 +43,7 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			s.CleanupExpired()
+			listEng.CleanupExpired()
 		}
 	}()
 
