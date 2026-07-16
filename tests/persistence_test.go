@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vpro3611/gomembase.git/pkg/list_storage"
 	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
+	"github.com/vpro3611/gomembase.git/pkg/wal"
 )
 
 // MockEngine is a simple implementation of persistence.Engine for testing coordination
@@ -227,5 +230,101 @@ func TestPersistence_SkipSectionAlignment(t *testing.T) {
 	// e2 should be FULLY and CORRECTLY restored because the parser aligned correctly after e1
 	if e2.data["target"] != "success" {
 		t.Errorf("e2 recovery failed or got misaligned. target value: %q", e2.data["target"])
+	}
+}
+
+// TestPersistence_JointKVAndListRecovery verifies that KV storage and List storage can coexist
+// and restore successfully from the same snapshot and WAL logs without colliding.
+func TestPersistence_JointKVAndListRecovery(t *testing.T) {
+	walPath := "test_joint_recovery.wal"
+	snapPath := "test_joint_recovery.snap"
+	defer os.Remove(walPath)
+	defer os.Remove(snapPath)
+
+	// Initialize the files
+	w, err := wal.NewWal(walPath)
+	if err != nil {
+		t.Fatalf("failed to create WAL: %v", err)
+	}
+	snap := snapshot.NewSnapshot(snapPath)
+
+	// Create and Register engines
+	pm := persistence.NewPersistenceManager(w, &snap)
+	kv := storage.NewStorage(pm)
+	pm.RegisterEngine(kv)
+
+	listEng := list_storage.NewListStorage(pm)
+	pm.RegisterEngine(listEng)
+
+	// Phase 1 (before snapshot):
+	err = kv.Set("kv_key1", []byte("val1"), storage.NewPayloadMetadata(time.Now(), nil))
+	if err != nil {
+		t.Fatalf("KV Set failed: %v", err)
+	}
+	_ = kv.Set("kv_key2", []byte("val2"), storage.NewPayloadMetadata(time.Now(), nil))
+	_ = listEng.LeftPush("list_key1", [][]byte{[]byte("a"), []byte("b"), []byte("c")}, nil) // [c, b, a]
+
+	// Save snapshot (truncates WAL)
+	if err := pm.SaveSnapshot(); err != nil {
+		t.Fatalf("SaveSnapshot failed: %v", err)
+	}
+
+	// Verify WAL is truncated
+	fi, _ := os.Stat(walPath)
+	if fi.Size() != 0 {
+		t.Errorf("expected WAL to be empty after snapshot, got size %d", fi.Size())
+	}
+
+	// Phase 2 (after snapshot, logged to WAL):
+	_ = kv.Set("kv_key3", []byte("val3"), storage.NewPayloadMetadata(time.Now(), nil))
+	_ = kv.Delete("kv_key1")
+	_ = listEng.RightPush("list_key1", [][]byte{[]byte("d")}, nil) // [c, b, a, d]
+	_, _ = listEng.LeftPop("list_key1")                            // pop "c" -> [b, a, d]
+	_ = listEng.RightPush("list_key2", [][]byte{[]byte("x"), []byte("y")}, nil)
+
+	// Close original WAL
+	w.CloseWal()
+
+	// Shutdown & Rebuild State
+	w2, err := wal.NewWal(walPath)
+	if err != nil {
+		t.Fatalf("failed to reopen WAL: %v", err)
+	}
+	defer w2.CloseWal()
+
+	pm2 := persistence.NewPersistenceManager(w2, &snap)
+	kv2 := storage.NewStorage(pm2)
+	pm2.RegisterEngine(kv2)
+
+	listEng2 := list_storage.NewListStorage(pm2)
+	pm2.RegisterEngine(listEng2)
+
+	// Restore both simultaneously
+	if err := pm2.Restore(nil); err != nil {
+		t.Fatalf("Joint restore failed: %v", err)
+	}
+
+	// Verify KV Engine recovery
+	if kv2.Exists("kv_key1") {
+		t.Error("kv_key1 should be deleted after restore")
+	}
+	v2, _ := kv2.Get("kv_key2")
+	if string(v2) != "val2" {
+		t.Errorf("expected kv_key2 -> val2, got: %s", string(v2))
+	}
+	v3, _ := kv2.Get("kv_key3")
+	if string(v3) != "val3" {
+		t.Errorf("expected kv_key3 -> val3, got: %s", string(v3))
+	}
+
+	// Verify List Engine recovery
+	l1, _ := listEng2.Get("list_key1")
+	if len(l1) != 3 || string(l1[0]) != "b" || string(l1[1]) != "a" || string(l1[2]) != "d" {
+		t.Errorf("list_key1 recovery failed. expected [b, a, d], got: %v", l1)
+	}
+
+	l2, _ := listEng2.Get("list_key2")
+	if len(l2) != 2 || string(l2[0]) != "x" || string(l2[1]) != "y" {
+		t.Errorf("list_key2 recovery failed. expected [x, y], got: %v", l2)
 	}
 }
