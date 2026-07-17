@@ -273,3 +273,144 @@ func TestListStorage_SnapshotRecovery(t *testing.T) {
 		t.Errorf("expected 1 expiration entry, got %d", len(ls2.Expirations()))
 	}
 }
+
+func TestListStorage_PatternCountAndFind(t *testing.T) {
+	mockWal := &MockWal{}
+	ls, _ := newListStorageWithWal(mockWal)
+
+	past := time.Now().Add(-10 * time.Minute)
+	future := time.Now().Add(10 * time.Minute)
+
+	_ = ls.RightPush("user:1", [][]byte{[]byte("val1")}, nil)
+	_ = ls.RightPush("user:2", [][]byte{[]byte("val2")}, &future)
+	_ = ls.RightPush("group:1", [][]byte{[]byte("gval1")}, nil)
+	_ = ls.RightPush("user:expired", [][]byte{[]byte("exp")}, &past)
+
+	// Test Counts (excluding expired key)
+	cPrefix, err := ls.CountByPrefix("user:")
+	if err != nil {
+		t.Fatalf("CountByPrefix failed: %v", err)
+	}
+	if cPrefix != 2 {
+		t.Errorf("expected CountByPrefix(\"user:\") to be 2, got %d", cPrefix)
+	}
+
+	cSuffix, err := ls.CountBySuffix(":1")
+	if err != nil {
+		t.Fatalf("CountBySuffix failed: %v", err)
+	}
+	if cSuffix != 2 {
+		t.Errorf("expected CountBySuffix(\":1\") to be 2, got %d", cSuffix)
+	}
+
+	cRegex, err := ls.CountByRegex(`^user:\d+$`)
+	if err != nil {
+		t.Fatalf("CountByRegex failed: %v", err)
+	}
+	if cRegex != 2 {
+		t.Errorf("expected CountByRegex(\"^user:\\d+$\") to be 2, got %d", cRegex)
+	}
+
+	// Test Find (excluding expired key)
+	fPrefix, err := ls.FindByPrefix("user:")
+	if err != nil {
+		t.Fatalf("FindByPrefix failed: %v", err)
+	}
+	if len(fPrefix) != 2 || string(fPrefix["user:1"][0]) != "val1" || string(fPrefix["user:2"][0]) != "val2" {
+		t.Errorf("expected FindByPrefix(\"user:\") to find user:1 and user:2, got %v", fPrefix)
+	}
+
+	fSuffix, err := ls.FindBySuffix(":1")
+	if err != nil {
+		t.Fatalf("FindBySuffix failed: %v", err)
+	}
+	if len(fSuffix) != 2 || string(fSuffix["user:1"][0]) != "val1" || string(fSuffix["group:1"][0]) != "gval1" {
+		t.Errorf("expected FindBySuffix(\":1\") to find user:1 and group:1, got %v", fSuffix)
+	}
+
+	fRegex, err := ls.FindByRegex(`^group:\d+$`)
+	if err != nil {
+		t.Fatalf("FindByRegex failed: %v", err)
+	}
+	if len(fRegex) != 1 || string(fRegex["group:1"][0]) != "gval1" {
+		t.Errorf("expected FindByRegex to find group:1, got %v", fRegex)
+	}
+}
+
+func TestListStorage_PatternDelete(t *testing.T) {
+	mockWal := &MockWal{}
+	ls, _ := newListStorageWithWal(mockWal)
+
+	past := time.Now().Add(-10 * time.Minute)
+
+	_ = ls.RightPush("user:1", [][]byte{[]byte("val1")}, nil)
+	_ = ls.RightPush("user:2", [][]byte{[]byte("val2")}, nil)
+	_ = ls.RightPush("group:1", [][]byte{[]byte("gval1")}, nil)
+	_ = ls.RightPush("user:expired", [][]byte{[]byte("exp")}, &past)
+
+	// Delete by prefix (should delete user:1 and user:2, and purge user:expired)
+	deleted, err := ls.DeleteByPrefix("user:")
+	if err != nil {
+		t.Fatalf("DeleteByPrefix failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 keys deleted, got %d", deleted)
+	}
+
+	// Verify they are really deleted
+	len1, _ := ls.Len("user:1")
+	len2, _ := ls.Len("user:2")
+	len3, _ := ls.Len("user:expired")
+	lenGroup, _ := ls.Len("group:1")
+	if len1 != 0 || len2 != 0 || len3 != 0 || lenGroup != 1 {
+		t.Errorf("unexpected key deletion state after DeleteByPrefix")
+	}
+
+	// Re-add and test Suffix delete
+	_ = ls.RightPush("user:1", [][]byte{[]byte("val1")}, nil)
+	deleted, err = ls.DeleteBySuffix(":1")
+	if err != nil {
+		t.Fatalf("DeleteBySuffix failed: %v", err)
+	}
+	if deleted != 2 { // user:1 and group:1
+		t.Errorf("expected 2 keys deleted, got %d", deleted)
+	}
+}
+
+func TestListStorage_PatternEdgeCases(t *testing.T) {
+	mockWal := &MockWal{}
+	ls, _ := newListStorageWithWal(mockWal)
+
+	// Invalid regex pattern
+	_, err := ls.CountByRegex("[")
+	if err == nil {
+		t.Error("expected error for invalid regex, got nil")
+	}
+
+	_, err = ls.FindByRegex("[")
+	if err == nil {
+		t.Error("expected error for invalid regex, got nil")
+	}
+
+	_, err = ls.DeleteByRegex("[")
+	if err == nil {
+		t.Error("expected error for invalid regex, got nil")
+	}
+
+	// Empty storage check
+	c, _ := ls.CountByPrefix("test")
+	if c != 0 {
+		t.Errorf("expected count 0 on empty database, got %d", c)
+	}
+
+	f, _ := ls.FindByPrefix("test")
+	if len(f) != 0 {
+		t.Errorf("expected empty map on empty database, got %v", f)
+	}
+
+	d, _ := ls.DeleteByPrefix("test")
+	if d != 0 {
+		t.Errorf("expected deleted count 0 on empty database, got %d", d)
+	}
+}
+
