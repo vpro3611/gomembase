@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/vpro3611/gomembase.git/pkg/list_storage"
 	"github.com/vpro3611/gomembase.git/pkg/persistence"
+	"github.com/vpro3611/gomembase.git/pkg/set_storage"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -32,6 +33,9 @@ func main() {
 	listEng := list_storage.NewListStorage(pm)
 	pm.RegisterEngine(listEng)
 
+	setEng := set_storage.NewSetStorage(pm)
+	pm.RegisterEngine(setEng)
+
 	// Restore state (snapshot + WAL)
 	if err := pm.Restore(nil); err != nil {
 		panic(err)
@@ -44,6 +48,7 @@ func main() {
 		for range ticker.C {
 			s.CleanupExpired()
 			listEng.CleanupExpired()
+			setEng.CleanupExpired()
 		}
 	}()
 
