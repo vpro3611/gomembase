@@ -10,7 +10,9 @@ import (
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"io"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,6 +43,16 @@ type ListStorageInterface interface {
 	Pos(key string, value []byte) (int64, error)
 	Delete(key string) error
 	CleanupExpired()
+
+	DeleteByPrefix(prefix string) (int64, error)
+	DeleteBySuffix(suffix string) (int64, error)
+	DeleteByRegex(regex string) (int64, error)
+	FindByPrefix(prefix string) (map[string][][]byte, error)
+	FindBySuffix(suffix string) (map[string][][]byte, error)
+	FindByRegex(regex string) (map[string][][]byte, error)
+	CountByPrefix(prefix string) (int64, error)
+	CountBySuffix(suffix string) (int64, error)
+	CountByRegex(regex string) (int64, error)
 }
 
 type ListStorage struct {
@@ -879,4 +891,279 @@ func (ls *ListStorage) CleanupExpired() {
 		ls.deleteNoLock(entry.key)
 		_ = ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(entry.key))
 	}
+}
+
+func (ls *ListStorage) deleteExpiredKeys(keys []string) {
+	ls.mutex.Lock()
+	defer ls.mutex.Unlock()
+
+	for _, k := range keys {
+		if val, exists := ls.data[k]; exists && val.expiresAt != nil && val.expiresAt.Before(time.Now()) {
+			ls.deleteNoLock(k)
+			_ = ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k))
+		}
+	}
+}
+
+func (ls *ListStorage) getListBytesNoLock(l *list.List) [][]byte {
+	res := make([][]byte, 0, l.Len())
+	for elem := l.Front(); elem != nil; elem = elem.Next() {
+		res = append(res, elem.Value.([]byte))
+	}
+	return res
+}
+
+func (ls *ListStorage) CountByPrefix(prefix string) (int64, error) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return count, nil
+}
+
+func (ls *ListStorage) CountBySuffix(suffix string) (int64, error) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return count, nil
+}
+
+func (ls *ListStorage) CountByRegex(regex string) (int64, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return 0, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var count int64
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if re.MatchString(k) {
+			count++
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return count, nil
+}
+
+func (ls *ListStorage) FindByPrefix(prefix string) (map[string][][]byte, error) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var result = make(map[string][][]byte)
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			result[k] = ls.getListBytesNoLock(v.value)
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return result, nil
+}
+
+func (ls *ListStorage) FindBySuffix(suffix string) (map[string][][]byte, error) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var result = make(map[string][][]byte)
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			result[k] = ls.getListBytesNoLock(v.value)
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return result, nil
+}
+
+func (ls *ListStorage) FindByRegex(regex string) (map[string][][]byte, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return nil, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	var result = make(map[string][][]byte)
+	var expiredKeys []string
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			expiredKeys = append(expiredKeys, k)
+			continue
+		}
+		if re.MatchString(k) {
+			result[k] = ls.getListBytesNoLock(v.value)
+		}
+	}
+
+	if len(expiredKeys) > 0 {
+		ls.mutex.RUnlock()
+		ls.deleteExpiredKeys(expiredKeys)
+		ls.mutex.RLock()
+	}
+
+	return result, nil
+}
+
+func (ls *ListStorage) DeleteByPrefix(prefix string) (int64, error) {
+	ls.mutex.Lock()
+	defer ls.mutex.Unlock()
+
+	return ls.deleteByPrefixNoLock(prefix)
+}
+
+func (ls *ListStorage) deleteByPrefixNoLock(prefix string) (int64, error) {
+	var count int64
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
+				ls.deleteNoLock(k)
+			}
+			continue
+		}
+		if strings.HasPrefix(k, prefix) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
+				return count, err
+			}
+			ls.deleteNoLock(k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (ls *ListStorage) DeleteBySuffix(suffix string) (int64, error) {
+	ls.mutex.Lock()
+	defer ls.mutex.Unlock()
+
+	return ls.deleteBySuffixNoLock(suffix)
+}
+
+func (ls *ListStorage) deleteBySuffixNoLock(suffix string) (int64, error) {
+	var count int64
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
+				ls.deleteNoLock(k)
+			}
+			continue
+		}
+		if strings.HasSuffix(k, suffix) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
+				return count, err
+			}
+			ls.deleteNoLock(k)
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (ls *ListStorage) DeleteByRegex(regex string) (int64, error) {
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		return 0, pkgerrors.RegexError{RegexExpr: regex, Err: err}
+	}
+
+	ls.mutex.Lock()
+	defer ls.mutex.Unlock()
+
+	return ls.deleteByRegexNoLock(re)
+}
+
+func (ls *ListStorage) deleteByRegexNoLock(re *regexp.Regexp) (int64, error) {
+	var count int64
+
+	for k, v := range ls.data {
+		if v.expiresAt != nil && v.expiresAt.Before(time.Now()) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err == nil {
+				ls.deleteNoLock(k)
+			}
+			continue
+		}
+		if re.MatchString(k) {
+			if err := ls.walLogger.Log(ls.EngineID(), "DELETE", url.PathEscape(k)); err != nil {
+				return count, err
+			}
+			ls.deleteNoLock(k)
+			count++
+		}
+	}
+	return count, nil
 }
