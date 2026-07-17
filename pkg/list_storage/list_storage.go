@@ -463,6 +463,8 @@ func (ls *ListStorage) popNoLockAndNoWal(key string, fromLeft bool) []byte {
 
 	if val.value.Len() == 0 {
 		ls.deleteNoLock(key)
+	} else {
+		ls.data[key] = val
 	}
 	return res
 }
@@ -697,6 +699,7 @@ func (ls *ListStorage) replaceNoLockAndNoWal(key string, index int, value []byte
 		}
 		idx++
 	}
+	ls.data[key] = val
 }
 
 func (ls *ListStorage) Insert(key string, pivot []byte, value []byte, before bool) (int64, error) {
@@ -753,6 +756,7 @@ func (ls *ListStorage) insertNoLockAndNoWal(key string, pivot []byte, value []by
 		val.value.InsertAfter(value, pivotElem)
 	}
 
+	ls.data[key] = val
 	return int64(val.value.Len())
 }
 
@@ -823,6 +827,8 @@ func (ls *ListStorage) removeNoLockAndNoWal(key string, count int, exactElement 
 
 	if val.value.Len() == 0 {
 		ls.deleteNoLock(key)
+	} else {
+		ls.data[key] = val
 	}
 
 	return removed
