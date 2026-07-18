@@ -19,6 +19,8 @@ type MockWal struct {
 	writes       []string
 	failWrite    bool
 	failTruncate bool
+	failAfter    int // Fail write after this many calls (if non-zero)
+	writeCalls   int // Count of write calls
 }
 
 func (m *MockWal) Writes() []string {
@@ -37,6 +39,22 @@ func (m *MockWal) WriteToWal(actionString string) (int, error) {
 	if m.failWrite {
 		return 0, ErrMockWriteFailed
 	}
+	if m.failAfter > 0 && m.writeCalls >= m.failAfter {
+		return 0, ErrMockWriteFailed
+	}
+	m.writeCalls++
+	m.writes = append(m.writes, actionString)
+	return len(actionString), nil
+}
+
+func (m *MockWal) WriteRaw(actionString string) (int, error) {
+	if m.failWrite {
+		return 0, ErrMockWriteFailed
+	}
+	if m.failAfter > 0 && m.writeCalls >= m.failAfter {
+		return 0, ErrMockWriteFailed
+	}
+	m.writeCalls++
 	m.writes = append(m.writes, actionString)
 	return len(actionString), nil
 }

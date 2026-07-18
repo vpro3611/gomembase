@@ -26,9 +26,18 @@ func TestKV_Benchmark_1000Requests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create wal: %v", err)
 	}
-	defer w.CloseWal()
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			_ = bw.SyncWal()
+		}
+	}()
+	defer ticker.Stop()
+
 	snap := snapshot.NewSnapshot(snapPath)
-	pm := persistence.NewPersistenceManager(w, &snap)
+	pm := persistence.NewPersistenceManager(bw, &snap)
 	s := storage.NewStorage(pm)
 	pm.RegisterEngine(s)
 
@@ -77,9 +86,18 @@ func TestList_Benchmark_1000Requests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create wal: %v", err)
 	}
-	defer w.CloseWal()
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			_ = bw.SyncWal()
+		}
+	}()
+	defer ticker.Stop()
+
 	snap := snapshot.NewSnapshot(snapPath)
-	pm := persistence.NewPersistenceManager(w, &snap)
+	pm := persistence.NewPersistenceManager(bw, &snap)
 	ls := list_storage.NewListStorage(pm)
 	pm.RegisterEngine(ls)
 
@@ -133,9 +151,18 @@ func TestSet_Benchmark_1000Requests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create wal: %v", err)
 	}
-	defer w.CloseWal()
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			_ = bw.SyncWal()
+		}
+	}()
+	defer ticker.Stop()
+
 	snap := snapshot.NewSnapshot(snapPath)
-	pm := persistence.NewPersistenceManager(w, &snap)
+	pm := persistence.NewPersistenceManager(bw, &snap)
 	ss := set_storage.NewSetStorage(pm)
 	pm.RegisterEngine(ss)
 
@@ -185,8 +212,9 @@ func BenchmarkKV_Set(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	s := storage.NewStorage(pm)
 	pm.RegisterEngine(s)
 
@@ -201,8 +229,9 @@ func BenchmarkKV_Get(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	s := storage.NewStorage(pm)
 	pm.RegisterEngine(s)
 	_ = s.Set("key", []byte("val"), storage.NewPayloadMetadata(time.Now(), nil))
@@ -218,8 +247,9 @@ func BenchmarkList_Push(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	ls := list_storage.NewListStorage(pm)
 	pm.RegisterEngine(ls)
 
@@ -234,8 +264,9 @@ func BenchmarkList_Pop(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	ls := list_storage.NewListStorage(pm)
 	pm.RegisterEngine(ls)
 
@@ -255,8 +286,9 @@ func BenchmarkSet_Add(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	ss := set_storage.NewSetStorage(pm)
 	pm.RegisterEngine(ss)
 
@@ -271,8 +303,9 @@ func BenchmarkSet_IsMember(b *testing.B) {
 	defer os.Remove(walPath)
 
 	w, _ := wal.NewWal(walPath)
-	defer w.CloseWal()
-	pm := persistence.NewPersistenceManager(w, nil)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
 	ss := set_storage.NewSetStorage(pm)
 	pm.RegisterEngine(ss)
 	_, _ = ss.SAdd("key", [][]byte{[]byte("val")}, nil)
