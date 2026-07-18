@@ -13,6 +13,7 @@ type WalInterface interface {
 	CloseWal() error
 	SyncWal() error
 	TruncateWal() error
+	WriteRaw(actionString string) (int, error)
 }
 
 type Wal struct {
@@ -45,6 +46,16 @@ func (w *Wal) WriteToWal(actionString string) (n int, err error) {
 	}
 	if syncErr := w.SyncWal(); syncErr != nil {
 		return n, syncErr
+	}
+	return n, nil
+}
+
+func (w *Wal) WriteRaw(actionString string) (n int, err error) {
+	bytes := []byte(actionString)
+	n, err = w.file.Write(bytes)
+	if err != nil {
+		err = pkgerrors.WalError{Path: w.path, Err: errors.Join(pkgerrors.WalFailedToWriteError, err, w.CloseWal()), Operation: "WRITE"}
+		return 0, err
 	}
 	return n, nil
 }
