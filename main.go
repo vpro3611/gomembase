@@ -16,16 +16,29 @@ func main() {
 		panic(walErr)
 	}
 
-	defer func(w *wal.Wal) {
-		err := w.CloseWal()
+	bufferedW := wal.NewBufferedWal(w)
+
+	defer func(bw *wal.BufferedWal) {
+		err := bw.CloseWal()
 		if err != nil {
 			panic(err)
 		}
-	}(w)
+	}(bufferedW)
 
 	snap := snapshot.NewSnapshot("test.rdb")
 
-	pm := persistence.NewPersistenceManager(w, &snap)
+	pm := persistence.NewPersistenceManager(bufferedW, &snap)
+
+	// Background WAL flushing every 1 second
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := bufferedW.SyncWal(); err != nil {
+				println("WAL flush failed:", err.Error())
+			}
+		}
+	}()
 
 	s := storage.NewStorage(pm)
 	pm.RegisterEngine(s)
