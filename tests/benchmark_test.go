@@ -13,6 +13,7 @@ import (
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
+	"github.com/vpro3611/gomembase.git/pkg/zset_storage"
 )
 
 // TestKV_Benchmark_1000Requests simulates 1000 KV SET and GET requests
@@ -205,6 +206,72 @@ func TestSet_Benchmark_1000Requests(t *testing.T) {
 	fmt.Printf("SISMEMBER: Total Time = %v, Avg/Op = %v\n", elapsedIsMem, elapsedIsMem/count)
 }
 
+// TestZSet_Benchmark_1000Requests simulates 1000 Sorted Set ZAdd and ZScore requests
+func TestZSet_Benchmark_1000Requests(t *testing.T) {
+	walPath := "zset_bench.wal"
+	snapPath := "zset_bench.rdb"
+	defer os.Remove(walPath)
+	defer os.Remove(snapPath)
+
+	w, err := wal.NewWal(walPath)
+	if err != nil {
+		t.Fatalf("failed to create wal: %v", err)
+	}
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			_ = bw.SyncWal()
+		}
+	}()
+	defer ticker.Stop()
+
+	snap := snapshot.NewSnapshot(snapPath)
+	pm := persistence.NewPersistenceManager(bw, &snap)
+	zs := zset_storage.NewZSetStorage(pm)
+	pm.RegisterEngine(zs)
+
+	const count = 1000
+	key := "benchzset"
+
+	// Benchmark ZAdd
+	startAdd := time.Now()
+	for i := 0; i < count; i++ {
+		member := []byte("member:" + strconv.Itoa(i))
+		score := float64(i)
+		_, err := zs.ZAdd(key, []zset_storage.ZSetMember{{Member: member, Score: score}}, nil)
+		if err != nil {
+			t.Fatalf("ZAdd failed: %v", err)
+		}
+	}
+	elapsedAdd := time.Since(startAdd)
+
+	// Check correct card
+	card, _ := zs.ZCard(key)
+	if card != count {
+		t.Errorf("expected sorted set size %d, got %d", count, card)
+	}
+
+	// Benchmark ZScore & correctness check
+	startScore := time.Now()
+	for i := 0; i < count; i++ {
+		member := []byte("member:" + strconv.Itoa(i))
+		score, ok, err := zs.ZScore(key, member)
+		if err != nil {
+			t.Fatalf("ZScore failed: %v", err)
+		}
+		if !ok || score != float64(i) {
+			t.Errorf("correctness check failed: expected member:%d to exist with score %f, got %f", i, float64(i), score)
+		}
+	}
+	elapsedScore := time.Since(startScore)
+
+	fmt.Printf("\n--- ZSet Benchmark (1000 requests) ---\n")
+	fmt.Printf("ZADD:   Total Time = %v, Avg/Op = %v\n", elapsedAdd, elapsedAdd/count)
+	fmt.Printf("ZSCORE: Total Time = %v, Avg/Op = %v\n", elapsedScore, elapsedScore/count)
+}
+
 // Standard Go Benchmarks for detailed profiling
 
 func BenchmarkKV_Set(b *testing.B) {
@@ -313,5 +380,44 @@ func BenchmarkSet_IsMember(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = ss.SIsMember("key", []byte("val"))
+	}
+}
+
+func BenchmarkZSet_Add(b *testing.B) {
+	walPath := "zset_bench_std.wal"
+	defer os.Remove(walPath)
+
+	w, _ := wal.NewWal(walPath)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
+	zs := zset_storage.NewZSetStorage(pm)
+	pm.RegisterEngine(zs)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = zs.ZAdd("key", []zset_storage.ZSetMember{{Member: []byte("val" + strconv.Itoa(i)), Score: float64(i)}}, nil)
+	}
+}
+
+func BenchmarkZSet_Range(b *testing.B) {
+	walPath := "zset_bench_std.wal"
+	defer os.Remove(walPath)
+
+	w, _ := wal.NewWal(walPath)
+	bw := wal.NewBufferedWal(w)
+	defer bw.CloseWal()
+	pm := persistence.NewPersistenceManager(bw, nil)
+	zs := zset_storage.NewZSetStorage(pm)
+	pm.RegisterEngine(zs)
+
+	// Pre-populate
+	for i := 0; i < 1000; i++ {
+		_, _ = zs.ZAdd("key", []zset_storage.ZSetMember{{Member: []byte("val" + strconv.Itoa(i)), Score: float64(i)}}, nil)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = zs.ZRange("key", 100, 200)
 	}
 }
