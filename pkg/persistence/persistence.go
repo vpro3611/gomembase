@@ -22,15 +22,20 @@ type Engine interface {
 	Clear() error
 }
 
+type DelegatedEngine interface {
+	ProcessDelegatedWalEntry(engineID string, action string, args []string) error
+}
+
 type WalLogger interface {
 	Log(engineID string, action string, args ...string) error
 }
 
 type PersistenceManager struct {
-	wal      wal.WalInterface
-	snapshot *snapshot.Snapshot
-	engines  map[string]Engine
-	mutex    sync.Mutex
+	wal            wal.WalInterface
+	snapshot       *snapshot.Snapshot
+	engines        map[string]Engine
+	fallbackEngine DelegatedEngine
+	mutex          sync.Mutex
 }
 
 func NewPersistenceManager(w wal.WalInterface, s *snapshot.Snapshot) *PersistenceManager {
@@ -45,6 +50,12 @@ func (pm *PersistenceManager) RegisterEngine(e Engine) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 	pm.engines[e.EngineID()] = e
+}
+
+func (pm *PersistenceManager) RegisterFallbackEngine(e DelegatedEngine) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.fallbackEngine = e
 }
 
 func (pm *PersistenceManager) Log(engineID string, action string, args ...string) error {
@@ -93,6 +104,9 @@ func (pm *PersistenceManager) Restore(restoreOnly []string) error {
 
 		engine, ok := pm.engines[engineID]
 		if !ok {
+			if pm.fallbackEngine != nil {
+				return pm.fallbackEngine.ProcessDelegatedWalEntry(engineID, action, args)
+			}
 			return fmt.Errorf("unregistered engine in WAL: %s", engineID)
 		}
 
