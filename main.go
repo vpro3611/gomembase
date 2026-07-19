@@ -1,14 +1,14 @@
 package main
 
 import (
-	"github.com/vpro3611/gomembase.git/pkg/list_storage"
-	"github.com/vpro3611/gomembase.git/pkg/persistence"
-	"github.com/vpro3611/gomembase.git/pkg/set_storage"
-	"github.com/vpro3611/gomembase.git/pkg/snapshot"
-	"github.com/vpro3611/gomembase.git/pkg/storage"
-	"github.com/vpro3611/gomembase.git/pkg/wal"
-	"github.com/vpro3611/gomembase.git/pkg/zset_storage"
+	"log"
 	"time"
+
+	"github.com/vpro3611/gomembase.git/pkg/multiplexer"
+	"github.com/vpro3611/gomembase.git/pkg/persistence"
+	"github.com/vpro3611/gomembase.git/pkg/server"
+	"github.com/vpro3611/gomembase.git/pkg/snapshot"
+	"github.com/vpro3611/gomembase.git/pkg/wal"
 )
 
 func main() {
@@ -41,44 +41,40 @@ func main() {
 		}
 	}()
 
-	s := storage.NewStorage(pm)
-	pm.RegisterEngine(s)
-
-	listEng := list_storage.NewListStorage(pm)
-	pm.RegisterEngine(listEng)
-
-	setEng := set_storage.NewSetStorage(pm)
-	pm.RegisterEngine(setEng)
-
-	zsetEng := zset_storage.NewZSetStorage(pm)
-	pm.RegisterEngine(zsetEng)
+	// Instantiate Multiplexer with limit of 5 sub-instances
+	mux := multiplexer.NewMultiplexer(pm, 5)
+	pm.RegisterEngine(mux)
+	pm.RegisterFallbackEngine(mux)
 
 	// Restore state (snapshot + WAL)
 	if err := pm.Restore(nil); err != nil {
 		panic(err)
 	}
 
-	// Expiration cleanup
+	// Expiration cleanup loop across all active sub-instances
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.CleanupExpired()
-			listEng.CleanupExpired()
-			setEng.CleanupExpired()
-			zsetEng.CleanupExpired()
+			mux.CleanupAllExpired()
 		}
 	}()
 
-	// Periodic snapshotting
+	// Periodic snapshotting every 5 minutes
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			if err := pm.SaveSnapshot(); err != nil {
-				// Log error instead of panicking in goroutine
 				println("Snapshot save failed:", err.Error())
 			}
 		}
 	}()
+
+	// Start TCP Server on port 6380
+	srv := server.NewServer(mux, ":6380")
+	log.Printf("Starting GObase TCP Server on :6380")
+	if err := srv.Start(); err != nil {
+		log.Fatalf("Server error: %v", err)
+	}
 }
