@@ -7,6 +7,7 @@ import (
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/storage"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
+	"github.com/vpro3611/gomembase.git/pkg/zset_storage"
 	"time"
 )
 
@@ -49,6 +50,9 @@ func main() {
 	setEng := set_storage.NewSetStorage(pm)
 	pm.RegisterEngine(setEng)
 
+	zsetEng := zset_storage.NewZSetStorage(pm)
+	pm.RegisterEngine(zsetEng)
+
 	// Restore state (snapshot + WAL)
 	if err := pm.Restore(nil); err != nil {
 		panic(err)
@@ -62,6 +66,7 @@ func main() {
 			s.CleanupExpired()
 			listEng.CleanupExpired()
 			setEng.CleanupExpired()
+			zsetEng.CleanupExpired()
 		}
 	}()
 
