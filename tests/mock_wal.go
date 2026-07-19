@@ -3,6 +3,7 @@ package tests
 import (
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/vpro3611/gomembase.git/pkg/persistence"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
@@ -16,27 +17,60 @@ var (
 )
 
 type MockWal struct {
+	mutex        sync.RWMutex
 	writes       []string
 	failWrite    bool
 	failTruncate bool
+	failAfter    int // Fail write after this many calls (if non-zero)
+	writeCalls   int // Count of write calls
 }
 
 func (m *MockWal) Writes() []string {
-	return m.writes
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	res := make([]string, len(m.writes))
+	copy(res, m.writes)
+	return res
 }
 
 func (m *MockWal) SetFailWrite(b bool) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.failWrite = b
 }
 
 func (m *MockWal) SetFailTruncate(b bool) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.failTruncate = b
 }
 
 func (m *MockWal) WriteToWal(actionString string) (int, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	if m.failWrite {
 		return 0, ErrMockWriteFailed
 	}
+	if m.failAfter > 0 && m.writeCalls >= m.failAfter {
+		return 0, ErrMockWriteFailed
+	}
+	m.writeCalls++
+	m.writes = append(m.writes, actionString)
+	return len(actionString), nil
+}
+
+func (m *MockWal) WriteRaw(actionString string) (int, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	if m.failWrite {
+		return 0, ErrMockWriteFailed
+	}
+	if m.failAfter > 0 && m.writeCalls >= m.failAfter {
+		return 0, ErrMockWriteFailed
+	}
+	m.writeCalls++
 	m.writes = append(m.writes, actionString)
 	return len(actionString), nil
 }
@@ -46,7 +80,13 @@ func (m *MockWal) ReadFromWal(buffer []byte) (int, error) {
 }
 
 func (m *MockWal) RecoverFromWal(applyFunc func(line string) error) error {
-	for _, line := range m.writes {
+	m.mutex.RLock()
+	// Copy slice to avoid holding read lock during applyFunc execution (which might do writes)
+	writesCopy := make([]string, len(m.writes))
+	copy(writesCopy, m.writes)
+	m.mutex.RUnlock()
+
+	for _, line := range writesCopy {
 		trimmed := line
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			trimmed = line[:len(line)-1]
@@ -67,6 +107,9 @@ func (m *MockWal) SyncWal() error {
 }
 
 func (m *MockWal) TruncateWal() error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	if m.failTruncate {
 		return ErrMockTruncateFailed
 	}
@@ -76,6 +119,9 @@ func (m *MockWal) TruncateWal() error {
 
 // Log implements persistence.WalLogger
 func (m *MockWal) Log(engineID string, action string, args ...string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	if m.failWrite {
 		return ErrMockWriteFailed
 	}
