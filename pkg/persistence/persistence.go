@@ -88,7 +88,31 @@ func (pm *PersistenceManager) Restore(restoreOnly []string) error {
 		}
 	}
 
-	// 2. Load from WAL later than snapshot
+	// 2. Load from WAL later than snapshot (Two-pass for TX recovery)
+	// Pass 1: Identify incomplete transactions
+	incompleteTxs := make(map[string]bool)
+	activeTxs := make(map[string]bool)
+
+	_ = pm.wal.RecoverFromWal(func(line string) error {
+		parts := strings.Split(line, "|")
+		if len(parts) >= 3 && parts[0] == "tx" {
+			txID := parts[2]
+			if parts[1] == "TX_BEGIN" {
+				activeTxs[txID] = true
+			} else if parts[1] == "TX_COMMIT" {
+				delete(activeTxs, txID)
+			}
+		}
+		return nil
+	})
+
+	for txID := range activeTxs {
+		incompleteTxs[txID] = true
+	}
+
+	// Pass 2: Replay valid entries
+	var currentTxID string
+
 	err := pm.wal.RecoverFromWal(func(line string) error {
 		parts := strings.Split(line, "|")
 		if len(parts) < 2 {
@@ -97,6 +121,19 @@ func (pm *PersistenceManager) Restore(restoreOnly []string) error {
 		engineID := parts[0]
 		action := parts[1]
 		args := parts[2:]
+
+		if engineID == "tx" && len(args) > 0 {
+			if action == "TX_BEGIN" {
+				currentTxID = args[0]
+			} else if action == "TX_COMMIT" {
+				currentTxID = ""
+			}
+			return nil
+		}
+
+		if currentTxID != "" && incompleteTxs[currentTxID] {
+			return nil // Skip incomplete TX entries
+		}
 
 		if len(restoreOnly) > 0 && !slices.Contains(restoreOnly, engineID) {
 			return nil
