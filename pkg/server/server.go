@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,16 @@ type Server struct {
 	wg         sync.WaitGroup
 	quit       chan struct{}
 	stopOnce   sync.Once
+}
+
+// Generate a random RFC-4122 compliant UUID
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	// Set version 4 and variant 1
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func NewServer(mux *multiplexer.Multiplexer, addr string) *Server {
@@ -113,6 +124,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	reader := bufio.NewReader(conn)
+	var txBuilder *multiplexer.TxBuilder
+
 	for {
 		select {
 		case <-s.quit:
@@ -134,6 +147,55 @@ func (s *Server) handleConnection(conn net.Conn) {
 				OK:    false,
 				Error: fmt.Sprintf("invalid json payload: %v", err),
 			})
+			continue
+		}
+
+		if req.Method == "MULTI" {
+			if txBuilder != nil {
+				s.sendResponse(conn, multiplexer.Response{OK: false, Error: "MULTI calls can not be nested"})
+				continue
+			}
+			txBuilder = multiplexer.NewTxBuilder(s.mux)
+			s.sendResponse(conn, multiplexer.Response{OK: true})
+			continue
+		}
+
+		if req.Method == "EXEC" {
+			if txBuilder == nil {
+				s.sendResponse(conn, multiplexer.Response{OK: false, Error: "EXEC without MULTI"})
+				continue
+			}
+
+			txID := "tx-" + generateUUID()
+			responses, err := txBuilder.Exec(txID)
+
+			if err != nil {
+				s.sendResponse(conn, multiplexer.Response{OK: false, Error: err.Error()})
+			} else {
+				var data []json.RawMessage
+				for _, r := range responses {
+					b, _ := json.Marshal(r)
+					data = append(data, json.RawMessage(b))
+				}
+				s.sendResponse(conn, multiplexer.Response{OK: true, Data: data})
+			}
+			txBuilder = nil
+			continue
+		}
+
+		if req.Method == "DISCARD" {
+			if txBuilder == nil {
+				s.sendResponse(conn, multiplexer.Response{OK: false, Error: "DISCARD without MULTI"})
+				continue
+			}
+			txBuilder = nil
+			s.sendResponse(conn, multiplexer.Response{OK: true})
+			continue
+		}
+
+		if txBuilder != nil {
+			txBuilder.Queue(req)
+			s.sendResponse(conn, multiplexer.Response{OK: true, Data: []json.RawMessage{json.RawMessage(`"QUEUED"`)}})
 			continue
 		}
 
