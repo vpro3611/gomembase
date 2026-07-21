@@ -46,6 +46,8 @@ type SetStorageInterface interface {
 	Delete(key string) error
 	CleanupExpired()
 
+	SnapshotMembers(key string) ([][]byte, bool)
+
 	DeleteByPrefix(prefix string) (int64, error)
 	DeleteBySuffix(suffix string) (int64, error)
 	DeleteByRegex(regex string) (int64, error)
@@ -84,6 +86,23 @@ func (ss *SetStorage) Expirations() SetExpirationHeap {
 
 func (ss *SetStorage) ExpirationMap() map[string]*SetExpirationEntry {
 	return ss.expirationMap
+}
+
+// SnapshotMembers returns all members of a set for undo purposes.
+func (ss *SetStorage) SnapshotMembers(key string) ([][]byte, bool) {
+	ss.mutex.RLock()
+	defer ss.mutex.RUnlock()
+
+	val, exists := ss.data[key]
+	if !exists || (val.expiresAt != nil && val.expiresAt.Before(time.Now())) {
+		return nil, false
+	}
+
+	members := make([][]byte, 0, len(val.members))
+	for member := range val.members {
+		members = append(members, []byte(member))
+	}
+	return members, true
 }
 
 // EngineID implements persistence.Engine

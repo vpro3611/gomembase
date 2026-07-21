@@ -49,6 +49,9 @@ type ZSetStorageInterface interface {
 	Delete(key string) error
 	CleanupExpired()
 
+	SnapshotZSetMember(key string, member []byte) (float64, bool)
+	SnapshotZSetAll(key string) ([]ZSetMember, bool)
+
 	DeleteByPrefix(prefix string) (int64, error)
 	DeleteBySuffix(suffix string) (int64, error)
 	DeleteByRegex(regex string) (int64, error)
@@ -87,6 +90,40 @@ func (zs *ZSetStorage) Expirations() ZSetExpirationHeap {
 
 func (zs *ZSetStorage) ExpirationMap() map[string]*ZSetExpirationEntry {
 	return zs.expirationMap
+}
+
+// SnapshotZSetMember returns the score of a member for undo purposes.
+func (zs *ZSetStorage) SnapshotZSetMember(key string, member []byte) (float64, bool) {
+	zs.mutex.RLock()
+	defer zs.mutex.RUnlock()
+
+	val, exists := zs.data[key]
+	if !exists || (val.expiresAt != nil && val.expiresAt.Before(time.Now())) {
+		return 0, false
+	}
+
+	score, ok := val.dict[string(member)]
+	return score, ok
+}
+
+// SnapshotZSetAll returns all members with scores for undo (e.g. ZPOPMAX/MIN rollback).
+func (zs *ZSetStorage) SnapshotZSetAll(key string) ([]ZSetMember, bool) {
+	zs.mutex.RLock()
+	defer zs.mutex.RUnlock()
+
+	val, exists := zs.data[key]
+	if !exists || (val.expiresAt != nil && val.expiresAt.Before(time.Now())) {
+		return nil, false
+	}
+
+	members := make([]ZSetMember, 0, len(val.dict))
+	// ZSet data is ordered by score in zsl, so we can iterate zsl
+	curr := val.zsl.header.level[0].forward
+	for curr != nil {
+		members = append(members, ZSetMember{Member: []byte(curr.ele), Score: curr.score})
+		curr = curr.level[0].forward
+	}
+	return members, true
 }
 
 // EngineID implements persistence.Engine

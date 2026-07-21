@@ -21,6 +21,7 @@ type StorageInterface interface {
 	SetWithTTL(key string, value []byte, ttl time.Duration) error
 	MsetWithTTL(data map[string]Payload, ttl time.Duration) error
 	Get(key string) ([]byte, error)
+	SnapshotKey(key string) (Payload, bool)
 	Mget(keys []string) (map[string][]byte, error)
 	Delete(key string) error
 	Exists(key string) bool
@@ -49,6 +50,18 @@ type Storage struct {
 	expirations   ExpirationHeap
 	expirationMap map[string]*ExpirationEntry
 	mutex         sync.RWMutex
+}
+
+// SnapshotKey returns the full payload (value + metadata) for undo purposes.
+// Returns (payload, true) if key exists and is not expired, (zero, false) otherwise.
+func (s *Storage) SnapshotKey(key string) (Payload, bool) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	p, ok := s.data[key]
+	if !ok || p.metadata.IsExpired() {
+		return Payload{}, false
+	}
+	return p, true
 }
 
 func (s *Storage) CountBySuffix(suffix string) int64 {
