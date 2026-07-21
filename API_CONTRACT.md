@@ -83,3 +83,16 @@ Pattern-matching operations are supported on `kv`, `list`, `set`, and `zset`.
 | **`FIND_PREFIX` / `FIND_SUFFIX` / `FIND_REGEX`** | `[pattern]` | `[key1, val1, key2, val2, ...]` | Flat interleaved pairs of matching keys and value contents. |
 | **`COUNT_PREFIX` / `COUNT_SUFFIX` / `COUNT_REGEX`** | `[pattern]` | `[integer]` | Total count of keys matching the pattern. |
 | **`DEL_PREFIX` / `DEL_SUFFIX` / `DEL_REGEX`** | `[pattern]` | `[integer]` | Deletes all matching keys. Returns count of deleted keys. |
+
+---
+
+## 6. Transaction Operations
+
+Transactions allow executing multiple commands atomically across any data structure or instance over a single TCP connection.
+
+| Method | `Request.Args` | `Response.Data` | Description |
+| :--- | :--- | :--- | :--- |
+| **`MULTI`** | (empty) | (empty) | Starts a transaction block. Subsequent commands are queued. |
+| **(Any Command)** | (varies) | `["QUEUED"]` | When in a transaction block, commands return `"QUEUED"` instead of executing immediately. |
+| **`EXEC`** | (empty) | `[Response1, Response2, ...]` | Executes all queued commands atomically. Returns an array of their respective JSON responses. |
+| **`DISCARD`** | (empty) | (empty) | Discards all queued commands and exits the transaction block. |
