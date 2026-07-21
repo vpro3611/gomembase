@@ -99,6 +99,10 @@ func (m *Multiplexer) Execute(req Request) Response {
 		return Response{OK: true, Data: []json.RawMessage{marshalInt64(int64(total))}}
 	}
 
+	// Acquire read lock for normal execution to prevent transactions from running concurrently
+	m.RLockTx()
+	defer m.RUnlockTx()
+
 	switch req.DS {
 	case "kv":
 		return m.executeKV(req)

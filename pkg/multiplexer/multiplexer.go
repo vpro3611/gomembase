@@ -24,17 +24,21 @@ var (
 
 type Multiplexer struct {
 	walLogger    persistence.WalLogger
+	txWalLogger  *TxWalLogger
 	kvEngines    map[string]*storage.Storage
 	listEngines  map[string]*list_storage.ListStorage
 	setEngines   map[string]*set_storage.SetStorage
 	zsetEngines  map[string]*zset_storage.ZSetStorage
 	maxInstances int
 	mutex        sync.RWMutex
+	txLock       sync.RWMutex
 }
 
 func NewMultiplexer(logger persistence.WalLogger, maxInstances int) *Multiplexer {
+	txLogger := NewTxWalLogger(logger)
 	return &Multiplexer{
-		walLogger:    logger,
+		walLogger:    txLogger, // Use TxWalLogger as the base logger
+		txWalLogger:  txLogger, // Keep a reference to control transactions
 		kvEngines:    make(map[string]*storage.Storage),
 		listEngines:  make(map[string]*list_storage.ListStorage),
 		setEngines:   make(map[string]*set_storage.SetStorage),
@@ -164,6 +168,17 @@ func (m *Multiplexer) GetZSet(uuid string) (*zset_storage.ZSetStorage, bool) {
 	defer m.mutex.RUnlock()
 	eng, ok := m.zsetEngines[uuid]
 	return eng, ok
+}
+
+// Transaction locking
+func (m *Multiplexer) TxLock() { m.txLock.Lock() }
+func (m *Multiplexer) TxUnlock() { m.txLock.Unlock() }
+func (m *Multiplexer) RLockTx() { m.txLock.RLock() }
+func (m *Multiplexer) RUnlockTx() { m.txLock.RUnlock() }
+
+// TxWalLogger returns the transaction WAL logger
+func (m *Multiplexer) TxWalLogger() *TxWalLogger {
+	return m.txWalLogger
 }
 
 func (m *Multiplexer) CleanupAllExpired() {
