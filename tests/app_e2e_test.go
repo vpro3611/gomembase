@@ -43,7 +43,7 @@ func startServerHelper(t *testing.T, w wal.WalInterface, snap *snapshot.Snapshot
 		t.Fatalf("failed to restore db: %v", err)
 	}
 
-	srv := server.NewServer(mux, "127.0.0.1:0")
+	srv := server.NewServer(mux, nil, "127.0.0.1:0")
 	errChan := make(chan error, 1)
 	go func() {
 		errChan <- srv.Start()

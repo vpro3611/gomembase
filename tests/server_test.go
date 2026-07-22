@@ -41,7 +41,7 @@ type User struct {
 func TestServer_E2E(t *testing.T) {
 	mockWal := &MockWal{}
 	mux := multiplexer.NewMultiplexer(mockWal, 10)
-	srv := server.NewServer(mux, "127.0.0.1:0")
+	srv := server.NewServer(mux, nil, "127.0.0.1:0")
 
 	// Start server in background
 	errChan := make(chan error, 1)
