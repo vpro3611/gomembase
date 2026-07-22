@@ -96,3 +96,31 @@ Transactions allow executing multiple commands atomically across any data struct
 | **(Any Command)** | (varies) | `["QUEUED"]` | When in a transaction block, commands return `"QUEUED"` instead of executing immediately. |
 | **`EXEC`** | (empty) | `[Response1, Response2, ...]` | Executes all queued commands atomically. Returns an array of their respective JSON responses. |
 | **`DISCARD`** | (empty) | (empty) | Discards all queued commands and exits the transaction block. |
+
+---
+
+## 7. Pub/Sub Operations
+
+Pub/Sub is an ephemeral, real-time messaging system. Subscriptions live only as long as the TCP connection is active. When a connection issues `SUBSCRIBE` or `PSUBSCRIBE`, it enters **Subscriber Mode** and cannot issue any standard database commands (`SET`, `GET`, `MULTI`, etc.) until it unsubscribes from all channels.
+
+| Method | `Request.Args` | `Response.Data` | Description |
+| :--- | :--- | :--- | :--- |
+| **`SUBSCRIBE`** | `[channel1, channel2, ...]` | `["subscribe", channel, total_subscriptions]` | Subscribes the connection to exact channel names. Returns one response per channel. |
+| **`UNSUBSCRIBE`** | `[channel1, channel2, ...]` | `["unsubscribe", channel, total_subscriptions]` | Unsubscribes from channels. When total_subscriptions hits 0, exits Subscriber Mode. |
+| **`PSUBSCRIBE`** | `[pattern1, pattern2, ...]` | `["psubscribe", pattern, total_subscriptions]` | Subscribes to channels matching a glob pattern (e.g. `news.*`). |
+| **`PUNSUBSCRIBE`** | `[pattern1, pattern2, ...]` | `["punsubscribe", pattern, total_subscriptions]` | Unsubscribes from pattern. |
+| **`PUBLISH`** | `[channel, message_payload]` | `[integer]` | Broadcasts the payload to all subscribers on the channel. Returns the count of recipients. |
+
+### Pushed Messages
+
+When a connection is subscribed to a channel, the server will asynchronously push JSON frames to it whenever a message is published.
+
+**Format for exact channel subscriptions:**
+```json
+{"type": "message", "channel": "news.sports", "data": "goal scored!"}
+```
+
+**Format for pattern subscriptions:**
+```json
+{"type": "pmessage", "pattern": "news.*", "channel": "news.sports", "data": "goal scored!"}
+```
