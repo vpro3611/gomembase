@@ -6,6 +6,7 @@ import (
 
 	"github.com/vpro3611/gomembase.git/pkg/multiplexer"
 	"github.com/vpro3611/gomembase.git/pkg/persistence"
+	"github.com/vpro3611/gomembase.git/pkg/pubsub"
 	"github.com/vpro3611/gomembase.git/pkg/server"
 	"github.com/vpro3611/gomembase.git/pkg/snapshot"
 	"github.com/vpro3611/gomembase.git/pkg/wal"
@@ -72,7 +73,8 @@ func main() {
 	}()
 
 	// Start TCP Server on port 6380
-	srv := server.NewServer(mux, ":6380")
+	hub := pubsub.NewHub()
+	srv := server.NewServer(mux, hub, ":6380")
 	log.Printf("Starting GObase TCP Server on :6380")
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server error: %v", err)
