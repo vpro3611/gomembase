@@ -124,3 +124,16 @@ When a connection is subscribed to a channel, the server will asynchronously pus
 ```json
 {"type": "pmessage", "pattern": "news.*", "channel": "news.sports", "data": "goal scored!"}
 ```
+
+---
+
+## 8. System & Control Plane Operations
+
+These commands operate at the multiplexer or server level, outside the context of a specific data structure engine.
+
+| Method | `Request.Args` | `Request.UUID` | `Response.Data` | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **`CREATE`** | (empty) | N/A | (empty, but sets `Response.UUID`) | Creates a new sub-instance database for the requested `Request.DS` type (e.g., `kv`, `list`). |
+| **`DELETE_INSTANCE`** | (empty) | `[uuid_string]` | (empty) | Deletes the specified sub-instance and frees its memory. |
+| **`INFO`** | (empty) | `[uuid_string]` (optional) | Custom JSON Object | Returns server diagnostics and memory usage tracking. If `uuid` is provided, filters memory stats to only that sub-instance. |
+
