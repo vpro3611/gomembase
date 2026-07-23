@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"sync"
 
 	"github.com/vpro3611/gomembase.git/pkg/list_storage"
@@ -59,6 +60,79 @@ func generateUUID() string {
 
 func (m *Multiplexer) TotalInstances() int {
 	return len(m.kvEngines) + len(m.listEngines) + len(m.setEngines) + len(m.zsetEngines)
+}
+
+
+func (m *Multiplexer) GetInfo(targetUUID string) InfoResponse {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	resp := InfoResponse{
+		OK: true,
+		Server: ServerInfo{
+			OS:               runtime.GOOS,
+			GoVersion:        runtime.Version(),
+			NumGoroutine:     runtime.NumGoroutine(),
+			NumCPU:           runtime.NumCPU(),
+			MemoryAllocBytes: memStats.Alloc,
+			TotalInstances:   m.TotalInstances(),
+		},
+		Users: []UserInfo{
+			{
+				UserID:    "default_user",
+				Instances: make([]InstanceInfo, 0),
+			},
+		},
+	}
+
+	for uuid, eng := range m.kvEngines {
+		if targetUUID == "" || targetUUID == uuid {
+			resp.Users[0].Instances = append(resp.Users[0].Instances, InstanceInfo{
+				UUID:             uuid,
+				DSType:           "kv",
+				KeyCount:         eng.KeyCount(),
+				MemoryUsageBytes: eng.MemoryUsageBytes(),
+			})
+		}
+	}
+
+	for uuid, eng := range m.listEngines {
+		if targetUUID == "" || targetUUID == uuid {
+			resp.Users[0].Instances = append(resp.Users[0].Instances, InstanceInfo{
+				UUID:             uuid,
+				DSType:           "list",
+				KeyCount:         eng.KeyCount(),
+				MemoryUsageBytes: eng.MemoryUsageBytes(),
+			})
+		}
+	}
+
+	for uuid, eng := range m.setEngines {
+		if targetUUID == "" || targetUUID == uuid {
+			resp.Users[0].Instances = append(resp.Users[0].Instances, InstanceInfo{
+				UUID:             uuid,
+				DSType:           "set",
+				KeyCount:         eng.KeyCount(),
+				MemoryUsageBytes: eng.MemoryUsageBytes(),
+			})
+		}
+	}
+
+	for uuid, eng := range m.zsetEngines {
+		if targetUUID == "" || targetUUID == uuid {
+			resp.Users[0].Instances = append(resp.Users[0].Instances, InstanceInfo{
+				UUID:             uuid,
+				DSType:           "zset",
+				KeyCount:         eng.KeyCount(),
+				MemoryUsageBytes: eng.MemoryUsageBytes(),
+			})
+		}
+	}
+
+	return resp
 }
 
 func (m *Multiplexer) ExceedsMaxInstances() bool {

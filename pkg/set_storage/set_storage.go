@@ -24,6 +24,29 @@ func NewValue(members map[string]struct{}, createdAt time.Time, expiresAt *time.
 	return Value{members: members, createdAt: createdAt, expiresAt: expiresAt}
 }
 
+func (s *SetStorage) KeyCount() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return len(s.data)
+}
+
+func (s *SetStorage) MemoryUsageBytes() int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var mem int64 = 0
+	for k, v := range s.data {
+		mem += int64(16 + len(k)) // string overhead
+		mem += 40                 // outer map entry overhead
+		
+		for member := range v.members {
+			mem += int64(16 + len(member)) // member string overhead
+			mem += 40                      // inner map entry overhead
+		}
+	}
+	return mem
+}
+
 type SetStorageInterface interface {
 	SAdd(key string, members [][]byte, expiresAt *time.Time) (int64, error)
 	SRem(key string, members [][]byte) (int64, error)
@@ -57,6 +80,8 @@ type SetStorageInterface interface {
 	CountByPrefix(prefix string) (int64, error)
 	CountBySuffix(suffix string) (int64, error)
 	CountByRegex(regex string) (int64, error)
+	KeyCount() int
+	MemoryUsageBytes() int64
 }
 
 type SetStorage struct {

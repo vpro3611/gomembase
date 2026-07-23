@@ -61,6 +61,8 @@ type ZSetStorageInterface interface {
 	CountByPrefix(prefix string) (int64, error)
 	CountBySuffix(suffix string) (int64, error)
 	CountByRegex(regex string) (int64, error)
+	KeyCount() int
+	MemoryUsageBytes() int64
 }
 
 type ZSetStorage struct {
@@ -82,6 +84,30 @@ func NewZSetStorage(logger persistence.WalLogger) *ZSetStorage {
 
 func (zs *ZSetStorage) Data() map[string]ZSetValue {
 	return zs.data
+}
+
+func (zs *ZSetStorage) KeyCount() int {
+	zs.mutex.RLock()
+	defer zs.mutex.RUnlock()
+	return len(zs.data)
+}
+
+func (zs *ZSetStorage) MemoryUsageBytes() int64 {
+	zs.mutex.RLock()
+	defer zs.mutex.RUnlock()
+
+	var mem int64 = 0
+	for k, v := range zs.data {
+		mem += int64(16 + len(k)) // string overhead
+		mem += 40                 // outer map entry overhead
+		
+		for member := range v.dict {
+			mem += int64(16 + len(member)) // member string overhead
+			mem += 40                      // inner dict map entry overhead
+			mem += 32                      // skiplist node overhead
+		}
+	}
+	return mem
 }
 
 func (zs *ZSetStorage) Expirations() ZSetExpirationHeap {

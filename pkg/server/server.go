@@ -159,6 +159,22 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 			continue
 		}
 
+		// INFO Command
+		if req.Method == "INFO" {
+			info := s.mux.GetInfo(req.UUID)
+			b, err := json.Marshal(info)
+			if err != nil {
+				s.sendResponse(clientConn, multiplexer.Response{OK: false, Error: "failed to marshal info response"})
+				continue
+			}
+			b = append(b, '\n')
+
+			// Write directly to the connection for custom response type,
+			// bypassing the standard multiplexer.Response serialization
+			clientConn.writeCh <- b
+			continue
+		}
+
 		// Pub/Sub Commands (Top Priority)
 		if req.Method == "PUBLISH" {
 			if len(req.Args) < 2 {

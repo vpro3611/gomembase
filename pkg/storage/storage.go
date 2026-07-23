@@ -42,6 +42,8 @@ type StorageInterface interface {
 	CountByPrefix(prefix string) int64
 	CountByRegex(regex string) (int64, error)
 	CountBySuffix(suffix string) int64
+	KeyCount() int
+	MemoryUsageBytes() int64
 }
 
 type Storage struct {
@@ -62,6 +64,25 @@ func (s *Storage) SnapshotKey(key string) (Payload, bool) {
 		return Payload{}, false
 	}
 	return p, true
+}
+
+func (s *Storage) KeyCount() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return len(s.data)
+}
+
+func (s *Storage) MemoryUsageBytes() int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	
+	var mem int64 = 0
+	for k, v := range s.data {
+		mem += int64(16 + len(k)) // string header + length
+		mem += 40                 // approx map overhead per entry
+		mem += int64(24 + cap(v.value)) // slice header + capacity
+	}
+	return mem
 }
 
 func (s *Storage) CountBySuffix(suffix string) int64 {

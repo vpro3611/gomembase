@@ -56,6 +56,8 @@ type ListStorageInterface interface {
 	CountByPrefix(prefix string) (int64, error)
 	CountBySuffix(suffix string) (int64, error)
 	CountByRegex(regex string) (int64, error)
+	KeyCount() int
+	MemoryUsageBytes() int64
 }
 
 type ListStorage struct {
@@ -77,6 +79,32 @@ func NewListStorage(logger persistence.WalLogger) *ListStorage {
 
 func (ls *ListStorage) Data() map[string]Value {
 	return ls.data
+}
+
+func (s *ListStorage) KeyCount() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return len(s.data)
+}
+
+func (s *ListStorage) MemoryUsageBytes() int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var mem int64 = 0
+	for k, v := range s.data {
+		mem += int64(16 + len(k)) // string overhead
+		mem += 40                 // map entry overhead
+		mem += 56                 // list.List struct overhead
+
+		for e := v.value.Front(); e != nil; e = e.Next() {
+			mem += 32 // list.Element struct overhead
+			if b, ok := e.Value.([]byte); ok {
+				mem += int64(24 + cap(b)) // slice overhead
+			}
+		}
+	}
+	return mem
 }
 
 func (ls *ListStorage) Expirations() ListExpirationHeap {
