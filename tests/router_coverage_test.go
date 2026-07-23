@@ -137,13 +137,13 @@ func TestRouter_List_LGET(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("LGET failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 3 {
-		t.Fatalf("expected 3 elements from LGET, got %d", len(resp.Data))
+	if len(resp.Items) != 3 {
+		t.Fatalf("expected 3 elements from LGET, got %d", len(resp.Items))
 	}
 
 	// Verify order matches RPUSH order
 	expected := []string{`"a"`, `"b"`, `"c"`}
-	for i, raw := range resp.Data {
+	for i, raw := range resp.Items {
 		if string(raw) != expected[i] {
 			t.Errorf("LGET[%d]: expected %s, got %s", i, expected[i], string(raw))
 		}
@@ -157,8 +157,11 @@ func TestRouter_List_LGET_Empty(t *testing.T) {
 	// LGET on a non-existent key: the engine returns an empty list (not an error)
 	// Verify the response is OK and Data is empty.
 	resp := mustSend(t, conn, r, multiplexer.Request{Method: "LGET", DS: "list", UUID: uuid, Args: jArgs(`"ghost"`)})
-	if resp.OK && len(resp.Data) != 0 {
-		t.Errorf("LGET on non-existent key: expected empty data, got %d elements", len(resp.Data))
+	if !resp.OK {
+		t.Fatalf("LGET on non-existent key should succeed: %s", resp.Error)
+	}
+	if len(resp.Items) != 0 {
+		t.Errorf("LGET on non-existent key: expected empty data, got %d elements", len(resp.Items))
 	}
 }
 
@@ -200,8 +203,8 @@ func TestRouter_List_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_PREFIX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 4 { // 2 keys × (key + jsonArray)
-		t.Errorf("FIND_PREFIX: expected 4 data items (2 key+array pairs), got %d", len(resp.Data))
+	if len(resp.Entries) != 2 {
+		t.Errorf("FIND_PREFIX: expected 2 entries, got %d", len(resp.Entries))
 	}
 
 	// FIND_SUFFIX ":2"
@@ -209,8 +212,8 @@ func TestRouter_List_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_SUFFIX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 2 {
-		t.Errorf("FIND_SUFFIX: expected 2 data items, got %d", len(resp.Data))
+	if len(resp.Entries) != 1 {
+		t.Errorf("FIND_SUFFIX: expected 1 entry, got %d", len(resp.Entries))
 	}
 
 	// FIND_REGEX "order:.*"
@@ -218,8 +221,8 @@ func TestRouter_List_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_REGEX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 2 {
-		t.Errorf("FIND_REGEX: expected 2 data items, got %d", len(resp.Data))
+	if len(resp.Entries) != 1 {
+		t.Errorf("FIND_REGEX: expected 1 entry, got %d", len(resp.Entries))
 	}
 
 	// DEL_PREFIX "user:" → removes 2
@@ -342,8 +345,8 @@ func TestRouter_Set_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_PREFIX set failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 6 { // 3 keys × (key+membersArray)
-		t.Errorf("FIND_PREFIX set: expected 6 data items, got %d", len(resp.Data))
+	if len(resp.Entries) != 3 {
+		t.Errorf("FIND_PREFIX set: expected 3 entries, got %d", len(resp.Entries))
 	}
 
 	// FIND_SUFFIX ":main"
@@ -351,8 +354,8 @@ func TestRouter_Set_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_SUFFIX set failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 2 {
-		t.Errorf("FIND_SUFFIX set: expected 2 data items, got %d", len(resp.Data))
+	if len(resp.Entries) != 1 {
+		t.Errorf("FIND_SUFFIX set: expected 1 entry, got %d", len(resp.Entries))
 	}
 
 	// FIND_REGEX "config:.*"
@@ -360,8 +363,8 @@ func TestRouter_Set_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("FIND_REGEX set failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 2 {
-		t.Errorf("FIND_REGEX set: expected 2 data items, got %d", len(resp.Data))
+	if len(resp.Entries) != 1 {
+		t.Errorf("FIND_REGEX set: expected 1 entry, got %d", len(resp.Entries))
 	}
 
 	// DEL_PREFIX "tag:" → removes 3
@@ -440,8 +443,8 @@ func TestRouter_ZSet_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("ZSET FIND_PREFIX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 4 { // 2 keys × (key + membersArray)
-		t.Errorf("ZSET FIND_PREFIX: expected 4 data items, got %d", len(resp.Data))
+	if len(resp.Grouped) != 2 {
+		t.Errorf("ZSET FIND_PREFIX: expected 2 entries, got %d", len(resp.Grouped))
 	}
 
 	// FIND_SUFFIX ":bob"
@@ -449,8 +452,8 @@ func TestRouter_ZSet_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("ZSET FIND_SUFFIX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 4 {
-		t.Errorf("ZSET FIND_SUFFIX: expected 4 data items, got %d", len(resp.Data))
+	if len(resp.Grouped) != 2 {
+		t.Errorf("ZSET FIND_SUFFIX: expected 2 entries, got %d", len(resp.Grouped))
 	}
 
 	// FIND_REGEX ".*:alice"
@@ -458,8 +461,8 @@ func TestRouter_ZSet_PatternOps(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("ZSET FIND_REGEX failed: %s", resp.Error)
 	}
-	if len(resp.Data) != 4 {
-		t.Errorf("ZSET FIND_REGEX: expected 4 data items, got %d", len(resp.Data))
+	if len(resp.Grouped) != 2 {
+		t.Errorf("ZSET FIND_REGEX: expected 2 entries, got %d", len(resp.Grouped))
 	}
 
 	// DEL_PREFIX "score:" → removes 2
@@ -490,6 +493,57 @@ func TestRouter_ZSet_PatternOps(t *testing.T) {
 	// Empty
 	resp = mustSend(t, conn, r, multiplexer.Request{Method: "COUNT_REGEX", DS: "zset", UUID: uuid, Args: jArgs(`".*"`)})
 	assertInt64(t, "ZSET total after all deletes", resp, 0)
+}
+
+func TestRouter_ZSetCoverage(t *testing.T) {
+	_, conn, r := startTestServer(t)
+	uuid := mustCreate(t, conn, r, "zset")
+
+	mustSend(t, conn, r, multiplexer.Request{
+		Method: "ZADD",
+		DS:     "zset",
+		UUID:   uuid,
+		Args:   jArgs(`"scores"`, `10`, `"alice"`),
+	})
+
+	scoreResp := mustSend(t, conn, r, multiplexer.Request{
+		Method: "ZSCORE",
+		DS:     "zset",
+		UUID:   uuid,
+		Args:   jArgs(`"scores"`, `"missing"`),
+	})
+	if !scoreResp.OK {
+		t.Fatalf("ZSCORE failed: %s", scoreResp.Error)
+	}
+	if scoreResp.Float != nil {
+		t.Fatalf("expected nil float for missing member, got %v", *scoreResp.Float)
+	}
+
+	rankResp := mustSend(t, conn, r, multiplexer.Request{
+		Method: "ZRANK",
+		DS:     "zset",
+		UUID:   uuid,
+		Args:   jArgs(`"scores"`, `"missing"`),
+	})
+	if !rankResp.OK {
+		t.Fatalf("ZRANK failed: %s", rankResp.Error)
+	}
+	if rankResp.Integer != nil {
+		t.Fatalf("expected nil integer for missing member, got %v", *rankResp.Integer)
+	}
+
+	revRankResp := mustSend(t, conn, r, multiplexer.Request{
+		Method: "ZREVRANK",
+		DS:     "zset",
+		UUID:   uuid,
+		Args:   jArgs(`"scores"`, `"missing"`),
+	})
+	if !revRankResp.OK {
+		t.Fatalf("ZREVRANK failed: %s", revRankResp.Error)
+	}
+	if revRankResp.Integer != nil {
+		t.Fatalf("expected nil integer for missing member, got %v", *revRankResp.Integer)
+	}
 }
 
 // ── Edge cases: invalid pattern / missing args / bad UUID ────────────────────
@@ -593,16 +647,11 @@ func jArgs(args ...string) []json.RawMessage {
 // assertInt64 reads a single int64 from resp.Data[0] and compares to want.
 func assertInt64(t *testing.T, label string, resp multiplexer.Response, want int64) {
 	t.Helper()
-	if len(resp.Data) == 0 {
-		t.Errorf("%s: expected Data[0] to be %d, but Data is empty", label, want)
+	if resp.Integer == nil {
+		t.Errorf("%s: expected Integer response, got nil", label)
 		return
 	}
-	var got int64
-	if err := json.Unmarshal(resp.Data[0], &got); err != nil {
-		t.Errorf("%s: failed to unmarshal int64 from %s: %v", label, string(resp.Data[0]), err)
-		return
-	}
-	if got != want {
-		t.Errorf("%s: expected %d, got %d", label, want, got)
+	if *resp.Integer != want {
+		t.Errorf("%s: expected %d, got %d", label, want, *resp.Integer)
 	}
 }

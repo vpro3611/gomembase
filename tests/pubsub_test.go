@@ -55,6 +55,19 @@ func readResponse(t *testing.T, reader *bufio.Reader) map[string]interface{} {
 	return resp
 }
 
+func readTypedResponse(t *testing.T, reader *bufio.Reader) multiplexer.Response {
+	t.Helper()
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("Failed to read typed response: %v", err)
+	}
+	var resp multiplexer.Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("Failed to unmarshal typed response: %v\nLine: %s", err, string(line))
+	}
+	return resp
+}
+
 func readPushMessage(t *testing.T, reader *bufio.Reader) pubsub.PushMessage {
 	t.Helper()
 	line, err := reader.ReadBytes('\n')
@@ -76,6 +89,30 @@ func sendRequest(t *testing.T, conn net.Conn, req string) {
 	_, err := conn.Write([]byte(req))
 	if err != nil {
 		t.Fatalf("Failed to send request: %v", err)
+	}
+}
+
+func assertPubSubAck(t *testing.T, resp map[string]interface{}, action, channel string) {
+	t.Helper()
+	if resp["ok"] != true {
+		t.Fatalf("%s failed: %v", action, resp)
+	}
+	pubsubAck, ok := resp["pubsub"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing pubsub ack: %v", resp)
+	}
+	if pubsubAck["action"] != action {
+		t.Fatalf("expected pubsub action %q, got %v", action, pubsubAck["action"])
+	}
+	if pubsubAck["channel"] != channel {
+		t.Fatalf("expected pubsub channel %q, got %v", channel, pubsubAck["channel"])
+	}
+	count, ok := pubsubAck["count"].(float64)
+	if !ok {
+		t.Fatalf("expected numeric pubsub count, got %v", pubsubAck["count"])
+	}
+	if count != 1 {
+		t.Fatalf("expected pubsub count 1, got %v", count)
 	}
 }
 
@@ -101,15 +138,13 @@ func TestPubSub_BasicSubscribePublish(t *testing.T) {
 	// Subscribe
 	sendRequest(t, subConn, `{"method":"SUBSCRIBE","args":["chat"]}`)
 	subResp := readResponse(t, subReader)
-	if subResp["ok"] != true {
-		t.Fatalf("Subscribe failed: %v", subResp)
-	}
+	assertPubSubAck(t, subResp, "subscribe", "chat")
 
 	// Publish
 	sendRequest(t, pubConn, `{"method":"PUBLISH","args":["chat","hello"]}`)
-	pubResp := readResponse(t, pubReader)
-	if pubResp["ok"] != true {
-		t.Fatalf("Publish failed: %v", pubResp)
+	pubResp := readTypedResponse(t, pubReader)
+	if !pubResp.OK || pubResp.Integer == nil || *pubResp.Integer != 1 {
+		t.Fatalf("Publish failed: %+v", pubResp)
 	}
 	
 	// Check push message
@@ -124,21 +159,31 @@ func TestPubSub_PSubscribeGlob(t *testing.T) {
 	defer cleanup()
 
 	addr := srv.Addr().String()
-	subConn, _ := net.Dial("tcp", addr)
+	subConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
 	defer subConn.Close()
 	subReader := bufio.NewReader(subConn)
 
-	pubConn, _ := net.Dial("tcp", addr)
+	pubConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
 	defer pubConn.Close()
 	pubReader := bufio.NewReader(pubConn)
 
 	// PSubscribe
 	sendRequest(t, subConn, `{"method":"PSUBSCRIBE","args":["news.*"]}`)
-	readResponse(t, subReader)
+	subResp := readResponse(t, subReader)
+	assertPubSubAck(t, subResp, "psubscribe", "news.*")
 
 	// Publish
 	sendRequest(t, pubConn, `{"method":"PUBLISH","args":["news.sports","goal"]}`)
-	readResponse(t, pubReader)
+	pubResp := readTypedResponse(t, pubReader)
+	if !pubResp.OK || pubResp.Integer == nil || *pubResp.Integer != 1 {
+		t.Fatalf("Publish failed: %+v", pubResp)
+	}
 
 	// Check push message
 	msg := readPushMessage(t, subReader)
@@ -152,12 +197,16 @@ func TestPubSub_SubscriberModeBlocksSET(t *testing.T) {
 	defer cleanup()
 
 	addr := srv.Addr().String()
-	subConn, _ := net.Dial("tcp", addr)
+	subConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
 	defer subConn.Close()
 	subReader := bufio.NewReader(subConn)
 
 	sendRequest(t, subConn, `{"method":"SUBSCRIBE","args":["chat"]}`)
-	readResponse(t, subReader)
+	subResp := readResponse(t, subReader)
+	assertPubSubAck(t, subResp, "subscribe", "chat")
 
 	sendRequest(t, subConn, `{"method":"SET","args":["key","val"]}`)
 	resp := readResponse(t, subReader)

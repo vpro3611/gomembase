@@ -112,11 +112,11 @@ func TestApp_E2E_MultiTenantIsolation(t *testing.T) {
 		Method: "GET",
 		Args:   []json.RawMessage{json.RawMessage(`"user:profile"`)},
 	})
-	if !get1.OK || len(get1.Data) != 1 {
+	if !get1.OK || len(get1.Value) == 0 {
 		t.Fatalf("GET instance 1 failed: %s", get1.Error)
 	}
 	var u1 TestUser
-	_ = json.Unmarshal(get1.Data[0], &u1)
+	_ = json.Unmarshal(get1.Value, &u1)
 	if u1.User != "Alice" || u1.Country != "US" {
 		t.Errorf("expected Alice in instance 1, got %+v", u1)
 	}
@@ -128,11 +128,11 @@ func TestApp_E2E_MultiTenantIsolation(t *testing.T) {
 		Method: "GET",
 		Args:   []json.RawMessage{json.RawMessage(`"user:profile"`)},
 	})
-	if !get2.OK || len(get2.Data) != 1 {
+	if !get2.OK || len(get2.Value) == 0 {
 		t.Fatalf("GET instance 2 failed: %s", get2.Error)
 	}
 	var u2 TestUser
-	_ = json.Unmarshal(get2.Data[0], &u2)
+	_ = json.Unmarshal(get2.Value, &u2)
 	if u2.User != "Bob" || u2.Country != "UK" {
 		t.Errorf("expected Bob in instance 2, got %+v", u2)
 	}
@@ -180,15 +180,15 @@ func TestApp_E2E_ListComplexPayloads(t *testing.T) {
 		Method: "LRANGE",
 		Args:   []json.RawMessage{json.RawMessage(`"tasks"`), json.RawMessage(`0`), json.RawMessage(`-1`)},
 	})
-	if !rng.OK || len(rng.Data) != 3 {
-		t.Fatalf("LRANGE failed: count=%d, error=%s", len(rng.Data), rng.Error)
+	if !rng.OK || len(rng.Items) != 3 {
+		t.Fatalf("LRANGE failed: count=%d, error=%s", len(rng.Items), rng.Error)
 	}
 
 	// Verify order: t3, t2, t1 (since LPUSH prepends)
 	var task3, task2, task1 TestTask
-	_ = json.Unmarshal(rng.Data[0], &task3)
-	_ = json.Unmarshal(rng.Data[1], &task2)
-	_ = json.Unmarshal(rng.Data[2], &task1)
+	_ = json.Unmarshal(rng.Items[0], &task3)
+	_ = json.Unmarshal(rng.Items[1], &task2)
+	_ = json.Unmarshal(rng.Items[2], &task1)
 
 	if task3.Task != "Fix race condition" || task2.Task != "Run tests" || task1.Task != "Buy milk" {
 		t.Errorf("expected tasks order Fix, Run, Buy, got %+v, %+v, %+v", task3, task2, task1)
@@ -201,11 +201,11 @@ func TestApp_E2E_ListComplexPayloads(t *testing.T) {
 		Method: "LINDEX",
 		Args:   []json.RawMessage{json.RawMessage(`"tasks"`), json.RawMessage(`1`)},
 	})
-	if !idx.OK || len(idx.Data) != 1 {
+	if !idx.OK || len(idx.Value) == 0 {
 		t.Fatalf("LINDEX failed: %s", idx.Error)
 	}
 	var taskIndex1 TestTask
-	_ = json.Unmarshal(idx.Data[0], &taskIndex1)
+	_ = json.Unmarshal(idx.Value, &taskIndex1)
 	if taskIndex1.Task != "Run tests" {
 		t.Errorf("expected Run tests, got %s", taskIndex1.Task)
 	}
@@ -241,11 +241,10 @@ func TestApp_E2E_SetComplexPayloads(t *testing.T) {
 		Method: "SADD",
 		Args:   []json.RawMessage{json.RawMessage(`"roles"`), json.RawMessage(r1), json.RawMessage(r2)},
 	})
-	if !add.OK || len(add.Data) != 1 {
+	if !add.OK || add.Integer == nil {
 		t.Fatalf("SADD failed: %s", add.Error)
 	}
-	var added int64
-	_ = json.Unmarshal(add.Data[0], &added)
+	added := *add.Integer
 	if added != 2 {
 		t.Errorf("expected 2 members added, got %d", added)
 	}
@@ -257,11 +256,10 @@ func TestApp_E2E_SetComplexPayloads(t *testing.T) {
 		Method: "SISMEMBER",
 		Args:   []json.RawMessage{json.RawMessage(`"roles"`), json.RawMessage(r1)},
 	})
-	if !isMem.OK || len(isMem.Data) != 1 {
+	if !isMem.OK || isMem.Boolean == nil {
 		t.Fatalf("SISMEMBER failed: %s", isMem.Error)
 	}
-	var member bool
-	_ = json.Unmarshal(isMem.Data[0], &member)
+	member := *isMem.Boolean
 	if !member {
 		t.Error("expected r1 to be member of roles")
 	}
@@ -273,8 +271,8 @@ func TestApp_E2E_SetComplexPayloads(t *testing.T) {
 		Method: "SMEMBERS",
 		Args:   []json.RawMessage{json.RawMessage(`"roles"`)},
 	})
-	if !mems.OK || len(mems.Data) != 2 {
-		t.Fatalf("SMEMBERS failed: data=%v, error=%s", mems.Data, mems.Error)
+	if !mems.OK || len(mems.Items) != 2 {
+		t.Fatalf("SMEMBERS failed: items=%v, error=%s", mems.Items, mems.Error)
 	}
 
 	_ = srv.Stop()
@@ -325,14 +323,14 @@ func TestApp_E2E_ZSetRankingObjects(t *testing.T) {
 		Method: "ZRANGE",
 		Args:   []json.RawMessage{json.RawMessage(`"users_zset"`), json.RawMessage(`0`), json.RawMessage(`-1`)},
 	})
-	if !rng.OK || len(rng.Data) != 6 {
-		t.Fatalf("ZRANGE failed: data=%v, error=%s", rng.Data, rng.Error)
+	if !rng.OK || len(rng.Scored) != 3 {
+		t.Fatalf("ZRANGE failed: scored=%v, error=%s", rng.Scored, rng.Error)
 	}
 
 	var firstUser, secondUser, thirdUser TestUser
-	_ = json.Unmarshal(rng.Data[0], &firstUser)
-	_ = json.Unmarshal(rng.Data[2], &secondUser)
-	_ = json.Unmarshal(rng.Data[4], &thirdUser)
+	_ = json.Unmarshal(rng.Scored[0].Member, &firstUser)
+	_ = json.Unmarshal(rng.Scored[1].Member, &secondUser)
+	_ = json.Unmarshal(rng.Scored[2].Member, &thirdUser)
 
 	if firstUser.User != "Charlie" || secondUser.User != "Alice" || thirdUser.User != "Bob" {
 		t.Errorf("expected ZRANGE sorted order Charlie, Alice, Bob, got %+v, %+v, %+v", firstUser, secondUser, thirdUser)
@@ -345,12 +343,12 @@ func TestApp_E2E_ZSetRankingObjects(t *testing.T) {
 		Method: "ZRANGEBYSCORE",
 		Args:   []json.RawMessage{json.RawMessage(`"users_zset"`), json.RawMessage(`90.0`), json.RawMessage(`200.0`)},
 	})
-	if !rngScore.OK || len(rngScore.Data) != 4 {
-		t.Fatalf("ZRANGEBYSCORE failed: data=%v, error=%s", rngScore.Data, rngScore.Error)
+	if !rngScore.OK || len(rngScore.Scored) != 2 {
+		t.Fatalf("ZRANGEBYSCORE failed: scored=%v, error=%s", rngScore.Scored, rngScore.Error)
 	}
 	var rAlice, rBob TestUser
-	_ = json.Unmarshal(rngScore.Data[0], &rAlice)
-	_ = json.Unmarshal(rngScore.Data[2], &rBob)
+	_ = json.Unmarshal(rngScore.Scored[0].Member, &rAlice)
+	_ = json.Unmarshal(rngScore.Scored[1].Member, &rBob)
 	if rAlice.User != "Alice" || rBob.User != "Bob" {
 		t.Errorf("expected Alice and Bob, got %s and %s", rAlice.User, rBob.User)
 	}
@@ -458,7 +456,7 @@ func TestApp_E2E_CrashRecoveryAndPersistence(t *testing.T) {
 		Args:   []json.RawMessage{json.RawMessage(`"user:10"`)},
 	})
 	var rDavid TestUser
-	_ = json.Unmarshal(get1.Data[0], &rDavid)
+	_ = json.Unmarshal(get1.Value, &rDavid)
 
 	get2 := sendRecv(t, conn3, reader3, multiplexer.Request{
 		DS:     "kv",
@@ -467,7 +465,7 @@ func TestApp_E2E_CrashRecoveryAndPersistence(t *testing.T) {
 		Args:   []json.RawMessage{json.RawMessage(`"user:20"`)},
 	})
 	var rElena TestUser
-	_ = json.Unmarshal(get2.Data[0], &rElena)
+	_ = json.Unmarshal(get2.Value, &rElena)
 
 	if rDavid.User != "David" || rElena.User != "Elena" {
 		t.Errorf("expected David and Elena, got %s and %s", rDavid.User, rElena.User)
@@ -482,8 +480,8 @@ func sendRecvCompareSlice(t *testing.T, conn net.Conn, reader *bufio.Reader, req
 	if !resp.OK {
 		t.Fatalf("request failed: %s", resp.Error)
 	}
-	got := make([]string, len(resp.Data))
-	for i, d := range resp.Data {
+	got := make([]string, len(resp.Items))
+	for i, d := range resp.Items {
 		var s string
 		_ = json.Unmarshal(d, &s)
 		got[i] = s

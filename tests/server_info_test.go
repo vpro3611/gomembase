@@ -71,29 +71,29 @@ func TestInfoCommand(t *testing.T) {
 	infoReq := multiplexer.Request{Method: "INFO"}
 	infoRespLine := sendRequest(infoReq)
 
-	var infoResp multiplexer.InfoResponse
+	var infoResp multiplexer.Response
 	if err := json.Unmarshal([]byte(infoRespLine), &infoResp); err != nil {
 		t.Fatalf("failed to unmarshal info response: %v\nLine: %s", err, infoRespLine)
 	}
 
-	if !infoResp.OK {
+	if !infoResp.OK || infoResp.Info == nil {
 		t.Fatalf("info request failed")
 	}
 
-	if infoResp.Server.TotalInstances != 1 {
-		t.Errorf("expected 1 total instance, got %d", infoResp.Server.TotalInstances)
+	if infoResp.Info.Server.TotalInstances != 1 {
+		t.Errorf("expected 1 total instance, got %d", infoResp.Info.Server.TotalInstances)
 	}
-	if infoResp.Server.MemoryAllocBytes == 0 {
+	if infoResp.Info.Server.MemoryAllocBytes == 0 {
 		t.Errorf("expected MemoryAllocBytes > 0")
 	}
-	if len(infoResp.Users) != 1 {
-		t.Fatalf("expected 1 user, got %d", len(infoResp.Users))
+	if len(infoResp.Info.Users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(infoResp.Info.Users))
 	}
-	if len(infoResp.Users[0].Instances) != 1 {
-		t.Fatalf("expected 1 instance under user, got %d", len(infoResp.Users[0].Instances))
+	if len(infoResp.Info.Users[0].Instances) != 1 {
+		t.Fatalf("expected 1 instance under user, got %d", len(infoResp.Info.Users[0].Instances))
 	}
 
-	inst := infoResp.Users[0].Instances[0]
+	inst := infoResp.Info.Users[0].Instances[0]
 	if inst.UUID != uuid {
 		t.Errorf("expected instance UUID %s, got %s", uuid, inst.UUID)
 	}
@@ -108,23 +108,29 @@ func TestInfoCommand(t *testing.T) {
 	infoReqWithUUID := multiplexer.Request{Method: "INFO", UUID: uuid}
 	infoRespWithUUIDLine := sendRequest(infoReqWithUUID)
 
-	var infoRespWithUUID multiplexer.InfoResponse
+	var infoRespWithUUID multiplexer.Response
 	if err := json.Unmarshal([]byte(infoRespWithUUIDLine), &infoRespWithUUID); err != nil {
 		t.Fatalf("failed to unmarshal info response with UUID: %v", err)
 	}
 
-	if len(infoRespWithUUID.Users[0].Instances) != 1 {
-		t.Fatalf("expected 1 instance when passing UUID, got %d", len(infoRespWithUUID.Users[0].Instances))
+	if infoRespWithUUID.Info == nil {
+		t.Fatalf("expected info payload for UUID response, got %+v", infoRespWithUUID)
+	}
+	if len(infoRespWithUUID.Info.Users[0].Instances) != 1 {
+		t.Fatalf("expected 1 instance when passing UUID, got %d", len(infoRespWithUUID.Info.Users[0].Instances))
 	}
 
 	// 5. Test INFO with non-existent UUID (should return empty instances array)
 	infoReqEmpty := multiplexer.Request{Method: "INFO", UUID: "non-existent-uuid"}
 	infoRespEmptyLine := sendRequest(infoReqEmpty)
 
-	var infoRespEmpty multiplexer.InfoResponse
+	var infoRespEmpty multiplexer.Response
 	json.Unmarshal([]byte(infoRespEmptyLine), &infoRespEmpty)
 
-	if len(infoRespEmpty.Users[0].Instances) != 0 {
-		t.Errorf("expected 0 instances when passing invalid UUID, got %d", len(infoRespEmpty.Users[0].Instances))
+	if infoRespEmpty.Info == nil {
+		t.Fatalf("expected info payload for empty UUID response, got %+v", infoRespEmpty)
+	}
+	if len(infoRespEmpty.Info.Users[0].Instances) != 0 {
+		t.Errorf("expected 0 instances when passing invalid UUID, got %d", len(infoRespEmpty.Info.Users[0].Instances))
 	}
 }

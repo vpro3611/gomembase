@@ -63,15 +63,14 @@ func (m *Multiplexer) TotalInstances() int {
 }
 
 
-func (m *Multiplexer) GetInfo(targetUUID string) InfoResponse {
+func (m *Multiplexer) GetInfo(targetUUID string) InfoPayload {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	resp := InfoResponse{
-		OK: true,
+	resp := InfoPayload{
 		Server: ServerInfo{
 			OS:               runtime.GOOS,
 			GoVersion:        runtime.Version(),

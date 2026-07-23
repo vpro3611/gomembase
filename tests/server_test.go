@@ -31,6 +31,22 @@ func sendRecv(t *testing.T, conn net.Conn, reader *bufio.Reader, req multiplexer
 	return resp
 }
 
+func mustValue(t *testing.T, resp multiplexer.Response) json.RawMessage {
+	t.Helper()
+	if len(resp.Value) == 0 {
+		t.Fatalf("expected value payload, got %+v", resp)
+	}
+	return resp.Value
+}
+
+func mustItems(t *testing.T, resp multiplexer.Response, expected int) []json.RawMessage {
+	t.Helper()
+	if len(resp.Items) != expected {
+		t.Fatalf("expected %d items, got %+v", expected, resp)
+	}
+	return resp.Items
+}
+
 type User struct {
 	Name    string   `json:"name"`
 	Age     int      `json:"age"`
@@ -91,11 +107,11 @@ func TestServer_E2E(t *testing.T) {
 		Method: "GET",
 		Args:   []json.RawMessage{argKey},
 	})
-	if !getResp.OK || len(getResp.Data) != 1 {
-		t.Fatalf("KV GET failed: data=%v, error=%s", getResp.Data, getResp.Error)
+	if !getResp.OK {
+		t.Fatalf("KV GET failed: error=%s", getResp.Error)
 	}
 	var gotStr string
-	_ = json.Unmarshal(getResp.Data[0], &gotStr)
+	_ = json.Unmarshal(mustValue(t, getResp), &gotStr)
 	if gotStr != "v1" {
 		t.Errorf("expected v1, got %s", gotStr)
 	}
@@ -127,11 +143,11 @@ func TestServer_E2E(t *testing.T) {
 		Method: "GET",
 		Args:   []json.RawMessage{userKey},
 	})
-	if !getObjResp.OK || len(getObjResp.Data) != 1 {
-		t.Fatalf("KV GET object failed: data=%v, error=%s", getObjResp.Data, getObjResp.Error)
+	if !getObjResp.OK {
+		t.Fatalf("KV GET object failed: error=%s", getObjResp.Error)
 	}
 	var gotUser User
-	err = json.Unmarshal(getObjResp.Data[0], &gotUser)
+	err = json.Unmarshal(mustValue(t, getObjResp), &gotUser)
 	if err != nil {
 		t.Fatalf("failed to unmarshal retrieved object: %v", err)
 	}
@@ -162,12 +178,13 @@ func TestServer_E2E(t *testing.T) {
 		Method: "LRANGE",
 		Args:   []json.RawMessage{json.RawMessage(`"lkey"`), json.RawMessage(`0`), json.RawMessage(`-1`)},
 	})
-	if !lrangeResp.OK || len(lrangeResp.Data) != 2 {
-		t.Fatalf("LRANGE failed: data=%v, error=%s", lrangeResp.Data, lrangeResp.Error)
+	if !lrangeResp.OK {
+		t.Fatalf("LRANGE failed: error=%s", lrangeResp.Error)
 	}
+	items := mustItems(t, lrangeResp, 2)
 	var id2, id1 map[string]int
-	_ = json.Unmarshal(lrangeResp.Data[0], &id2)
-	_ = json.Unmarshal(lrangeResp.Data[1], &id1)
+	_ = json.Unmarshal(items[0], &id2)
+	_ = json.Unmarshal(items[1], &id1)
 	if id2["id"] != 2 || id1["id"] != 1 {
 		t.Errorf("expected list elements [id:2, id:1], got [%+v, %+v]", id2, id1)
 	}
@@ -185,11 +202,10 @@ func TestServer_E2E(t *testing.T) {
 		Method: "SADD",
 		Args:   []json.RawMessage{json.RawMessage(`"skey"`), json.RawMessage(`"member1"`), json.RawMessage(`"member2"`)},
 	})
-	if !saddResp.OK || len(saddResp.Data) != 1 {
-		t.Fatalf("SADD failed: data=%v, error=%s", saddResp.Data, saddResp.Error)
+	if !saddResp.OK || saddResp.Integer == nil {
+		t.Fatalf("SADD failed: %+v", saddResp)
 	}
-	var added int64
-	_ = json.Unmarshal(saddResp.Data[0], &added)
+	added := *saddResp.Integer
 	if added != 2 {
 		t.Errorf("expected 2 members added, got %d", added)
 	}
@@ -207,11 +223,10 @@ func TestServer_E2E(t *testing.T) {
 		Method: "ZADD",
 		Args:   []json.RawMessage{json.RawMessage(`"zkey"`), json.RawMessage(`1.5`), json.RawMessage(`"m1"`), json.RawMessage(`2.5`), json.RawMessage(`"m2"`)},
 	})
-	if !zaddResp.OK || len(zaddResp.Data) != 1 {
-		t.Fatalf("ZADD failed: data=%v, error=%s", zaddResp.Data, zaddResp.Error)
+	if !zaddResp.OK || zaddResp.Integer == nil {
+		t.Fatalf("ZADD failed: %+v", zaddResp)
 	}
-	var zadded int64
-	_ = json.Unmarshal(zaddResp.Data[0], &zadded)
+	zadded := *zaddResp.Integer
 	if zadded != 2 {
 		t.Errorf("expected 2 zset members added, got %d", zadded)
 	}
@@ -222,15 +237,13 @@ func TestServer_E2E(t *testing.T) {
 		Method: "ZRANGE",
 		Args:   []json.RawMessage{json.RawMessage(`"zkey"`), json.RawMessage(`0`), json.RawMessage(`-1`)},
 	})
-	if !zrangeResp.OK || len(zrangeResp.Data) != 4 {
-		t.Fatalf("ZRANGE failed: data=%v, error=%s", zrangeResp.Data, zrangeResp.Error)
+	if !zrangeResp.OK || len(zrangeResp.Scored) != 2 {
+		t.Fatalf("ZRANGE failed: %+v", zrangeResp)
 	}
 	var m1 string
-	var s1 float64
-	_ = json.Unmarshal(zrangeResp.Data[0], &m1)
-	_ = json.Unmarshal(zrangeResp.Data[1], &s1)
-	if m1 != "m1" || s1 != 1.5 {
-		t.Errorf("expected m1 score 1.5, got %s score %f", m1, s1)
+	_ = json.Unmarshal(zrangeResp.Scored[0].Member, &m1)
+	if m1 != "m1" || zrangeResp.Scored[0].Score != 1.5 {
+		t.Errorf("expected m1 score 1.5, got %s score %f", m1, zrangeResp.Scored[0].Score)
 	}
 
 	// 6. Test invalid command
@@ -257,4 +270,56 @@ func TestServer_E2E(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Error("timed out waiting for Server Start to return")
 	}
+}
+
+func TestServer_TransactionTypedResponses(t *testing.T) {
+	mockWal := &MockWal{}
+	mux := multiplexer.NewMultiplexer(mockWal, 10)
+	srv := server.NewServer(mux, nil, "127.0.0.1:0")
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- srv.Start()
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial server: %v", err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	createResp := sendRecv(t, conn, reader, multiplexer.Request{DS: "kv", Method: "CREATE"})
+	if !createResp.OK || createResp.UUID == "" {
+		t.Fatalf("failed to create KV instance: %+v", createResp)
+	}
+
+	multiResp := sendRecv(t, conn, reader, multiplexer.Request{Method: "MULTI"})
+	if !multiResp.OK {
+		t.Fatalf("expected OK MULTI response, got %+v", multiResp)
+	}
+
+	setReq := multiplexer.Request{
+		DS:     "kv",
+		UUID:   createResp.UUID,
+		Method: "SET",
+		Args:   []json.RawMessage{json.RawMessage(`"tx-key"`), json.RawMessage(`"tx-val"`)},
+	}
+	queuedResp := sendRecv(t, conn, reader, setReq)
+	if !queuedResp.OK || queuedResp.Queued == nil || !*queuedResp.Queued {
+		t.Fatalf("expected queued SET response, got %+v", queuedResp)
+	}
+
+	execResp := sendRecv(t, conn, reader, multiplexer.Request{Method: "EXEC"})
+	if !execResp.OK || len(execResp.Responses) != 1 {
+		t.Fatalf("expected EXEC typed responses, got %+v", execResp)
+	}
+	if !execResp.Responses[0].OK {
+		t.Fatalf("expected nested exec response to succeed, got %+v", execResp.Responses[0])
+	}
+
+	_ = conn.Close()
+	_ = srv.Stop()
+	<-errChan
 }

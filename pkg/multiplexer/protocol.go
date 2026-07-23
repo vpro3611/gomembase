@@ -10,18 +10,139 @@ type Request struct {
 }
 
 type Response struct {
-	OK    bool              `json:"ok"`
-	UUID  string            `json:"uuid,omitempty"`
-	Data  []json.RawMessage `json:"data,omitempty"`
-	Error string            `json:"error,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+
+	UUID string `json:"uuid,omitempty"` // multiplexer.Create(), multiplexer.CreateInstance()
+
+	Value     json.RawMessage            `json:"value,omitempty"`     // kv.Get(), list.LGET()
+	Integer   *int64                     `json:"integer,omitempty"`   // kv.Incr(), kv.Decr(), list.LLEN(), zset.ZCARD(), multiplexer.TotalInstances()
+	Float     *float64                   `json:"float,omitempty"`     // zset.ZSCORE()
+	Boolean   *bool                      `json:"boolean,omitempty"`   // kv.Exists(), set.SISMEMBER()
+	Items     []json.RawMessage          `json:"items,omitempty"`     // kv.Keys(), list.LRANGE(), set.SMEMBERS()
+	Flags     []bool                     `json:"flags,omitempty"`     // set.SMISMEMBER()
+	KeyVals   map[string]json.RawMessage `json:"key_vals,omitempty"`  // kv.MGET()
+	Entries   []Entry                    `json:"entries,omitempty"`   // kv.All(), list.All(), set.All()
+	Scored    []ScoredMember             `json:"scored,omitempty"`    // zset.ZRANGE(), zset.ZREVRANGE(), zset.ZRANGEBYSCORE()
+	Grouped   []ScoredEntry              `json:"grouped,omitempty"`   // zset.All()
+	Responses []Response                 `json:"responses,omitempty"` // server.Exec()
+	Queued    *bool                      `json:"queued,omitempty"`    // server.MULTI()
+	PubSub    *PubSubAck                 `json:"pubsub,omitempty"`    // server.SUBSCRIBE(), server.UNSUBSCRIBE(), server.PSUBSCRIBE(), server.PUNSUBSCRIBE()
+	Info      *InfoPayload               `json:"info,omitempty"`      // server.INFO()
+
 }
 
-type InfoResponse struct {
-	OK     bool         `json:"ok"`
-	Error  string       `json:"error,omitempty"`
-	Server ServerInfo   `json:"server,omitempty"`
-	Users  []UserInfo   `json:"users,omitempty"`
+type Entry struct {
+	Key   string            `json:"key"`
+	Items []json.RawMessage `json:"items"`
 }
+
+type ScoredMember struct {
+	Member json.RawMessage `json:"member"`
+	Score  float64         `json:"score"`
+}
+
+type ScoredEntry struct {
+	Key   string         `json:"key"`
+	Items []ScoredMember `json:"items"`
+}
+
+type PubSubAck struct {
+	Action  string `json:"action"`
+	Channel string `json:"channel"`
+	Count   int    `json:"count"`
+}
+
+type InfoPayload struct {
+	Server ServerInfo `json:"server"`
+	Users  []UserInfo `json:"users"`
+}
+
+func intPtr(v int64) *int64 {
+	return &v
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func OK() Response {
+	return Response{OK: true}
+}
+
+func WithValue(v json.RawMessage) Response {
+	return Response{OK: true, Value: v}
+}
+
+func WithInteger(v int64) Response {
+	return Response{OK: true, Integer: intPtr(v)}
+}
+
+func WithFloat(v float64) Response {
+	return Response{OK: true, Float: floatPtr(v)}
+}
+
+func WithBoolean(v bool) Response {
+	return Response{OK: true, Boolean: boolPtr(v)}
+}
+
+func WithItems(v []json.RawMessage) Response {
+	return Response{OK: true, Items: v}
+}
+
+func WithFlags(v []bool) Response {
+	return Response{OK: true, Flags: v}
+}
+
+func WithKeyVals(v map[string]json.RawMessage) Response {
+	return Response{OK: true, KeyVals: v}
+}
+
+func WithEntries(v []Entry) Response {
+	return Response{OK: true, Entries: v}
+}
+
+func WithScored(v []ScoredMember) Response {
+	return Response{OK: true, Scored: v}
+}
+
+func WithGrouped(v []ScoredEntry) Response {
+	return Response{OK: true, Grouped: v}
+}
+
+func WithResponses(v []Response) Response {
+	return Response{OK: true, Responses: v}
+}
+
+func WithQueued() Response {
+	return Response{OK: true, Queued: boolPtr(true)}
+}
+
+func WithPubSub(v *PubSubAck) Response {
+	return Response{OK: true, PubSub: v}
+}
+
+func WithInfo(v InfoPayload) Response {
+	return Response{OK: true, Info: &v}
+}
+
+func WithUUID(uuid string) Response {
+	return Response{OK: true, UUID: uuid}
+}
+
+func Fail(err error) Response {
+	return Response{OK: false, Error: err.Error()}
+}
+
+func FailMsg(msg string) Response {
+	return Response{OK: false, Error: msg}
+}
+
+
 
 type ServerInfo struct {
 	OS               string `json:"os"`

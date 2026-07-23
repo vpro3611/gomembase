@@ -162,16 +162,7 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 		// INFO Command
 		if req.Method == "INFO" {
 			info := s.mux.GetInfo(req.UUID)
-			b, err := json.Marshal(info)
-			if err != nil {
-				s.sendResponse(clientConn, multiplexer.Response{OK: false, Error: "failed to marshal info response"})
-				continue
-			}
-			b = append(b, '\n')
-
-			// Write directly to the connection for custom response type,
-			// bypassing the standard multiplexer.Response serialization
-			clientConn.writeCh <- b
+			s.sendResponse(clientConn, multiplexer.WithInfo(info))
 			continue
 		}
 
@@ -187,7 +178,7 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 				continue
 			}
 			recipients := s.hub.Publish(channel, req.Args[1])
-			s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{json.RawMessage(fmt.Sprintf("%d", recipients))}})
+			s.sendResponse(clientConn, multiplexer.WithInteger(int64(recipients)))
 			continue
 		}
 
@@ -197,11 +188,11 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 				var channel string
 				if err := json.Unmarshal(arg, &channel); err == nil && channel != "" {
 					subCount = s.hub.Subscribe(channel, clientConn)
-					s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{
-						json.RawMessage(`"subscribe"`),
-						json.RawMessage(fmt.Sprintf("%q", channel)),
-						json.RawMessage(fmt.Sprintf("%d", subCount)),
-					}})
+					s.sendResponse(clientConn, multiplexer.WithPubSub(&multiplexer.PubSubAck{
+						Action:  "subscribe",
+						Channel: channel,
+						Count:   subCount,
+					}))
 				}
 			}
 			continue
@@ -212,11 +203,11 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 				var channel string
 				if err := json.Unmarshal(arg, &channel); err == nil {
 					subCount = s.hub.Unsubscribe(channel, clientConn)
-					s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{
-						json.RawMessage(`"unsubscribe"`),
-						json.RawMessage(fmt.Sprintf("%q", channel)),
-						json.RawMessage(fmt.Sprintf("%d", subCount)),
-					}})
+					s.sendResponse(clientConn, multiplexer.WithPubSub(&multiplexer.PubSubAck{
+						Action:  "unsubscribe",
+						Channel: channel,
+						Count:   subCount,
+					}))
 				}
 			}
 			if subCount == 0 {
@@ -231,11 +222,11 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 				var pattern string
 				if err := json.Unmarshal(arg, &pattern); err == nil && pattern != "" {
 					subCount = s.hub.PSubscribe(pattern, clientConn)
-					s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{
-						json.RawMessage(`"psubscribe"`),
-						json.RawMessage(fmt.Sprintf("%q", pattern)),
-						json.RawMessage(fmt.Sprintf("%d", subCount)),
-					}})
+					s.sendResponse(clientConn, multiplexer.WithPubSub(&multiplexer.PubSubAck{
+						Action:  "psubscribe",
+						Channel: pattern,
+						Count:   subCount,
+					}))
 				}
 			}
 			continue
@@ -246,11 +237,11 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 				var pattern string
 				if err := json.Unmarshal(arg, &pattern); err == nil {
 					subCount = s.hub.PUnsubscribe(pattern, clientConn)
-					s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{
-						json.RawMessage(`"punsubscribe"`),
-						json.RawMessage(fmt.Sprintf("%q", pattern)),
-						json.RawMessage(fmt.Sprintf("%d", subCount)),
-					}})
+					s.sendResponse(clientConn, multiplexer.WithPubSub(&multiplexer.PubSubAck{
+						Action:  "punsubscribe",
+						Channel: pattern,
+						Count:   subCount,
+					}))
 				}
 			}
 			if subCount == 0 {
@@ -286,12 +277,7 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 			if err != nil {
 				s.sendResponse(clientConn, multiplexer.Response{OK: false, Error: err.Error()})
 			} else {
-				var data []json.RawMessage
-				for _, r := range responses {
-					b, _ := json.Marshal(r)
-					data = append(data, json.RawMessage(b))
-				}
-				s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: data})
+				s.sendResponse(clientConn, multiplexer.WithResponses(responses))
 			}
 			txBuilder = nil
 			continue
@@ -309,7 +295,7 @@ func (s *Server) handleConnection(clientConn *ClientConn) {
 
 		if txBuilder != nil {
 			txBuilder.Queue(req)
-			s.sendResponse(clientConn, multiplexer.Response{OK: true, Data: []json.RawMessage{json.RawMessage(`"QUEUED"`)}})
+			s.sendResponse(clientConn, multiplexer.WithQueued())
 			continue
 		}
 
