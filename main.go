@@ -42,7 +42,7 @@ func main() {
 		}
 	}()
 
-	// Instantiate Multiplexer with limit of 5 sub-instances
+	// Instantiate Multiplexer with limit
 	mux := multiplexer.NewMultiplexer(pm, 5)
 	pm.RegisterEngine(mux)
 	pm.RegisterFallbackEngine(mux)
