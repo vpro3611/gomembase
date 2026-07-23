@@ -306,6 +306,33 @@ func (m *Multiplexer) executeKV(req Request) Response {
 		}
 		return Response{OK: true}
 
+	case "MSET_TTL":
+		// Args: [key1, val1, key2, val2, ..., ttl_ms]
+		if len(req.Args) < 3 || len(req.Args)%2 == 0 {
+			return Response{OK: false, Error: "MSET_TTL requires key-value pairs followed by ttl_ms"}
+		}
+		ttlMs, err := unmarshalInt64(req.Args[len(req.Args)-1])
+		if err != nil {
+			return Response{OK: false, Error: "invalid ttl_ms parameter"}
+		}
+		ttl := time.Duration(ttlMs) * time.Millisecond
+		now := time.Now()
+		expAt := now.Add(ttl)
+		payloadMap := make(map[string]storage.Payload)
+		pairs := req.Args[:len(req.Args)-1]
+		for i := 0; i < len(pairs); i += 2 {
+			k, err := unmarshalString(pairs[i])
+			if err != nil {
+				return Response{OK: false, Error: "failed to parse key"}
+			}
+			metadata := storage.NewPayloadMetadata(now, &expAt)
+			payloadMap[k] = storage.NewPayload([]byte(pairs[i+1]), metadata)
+		}
+		if err := eng.MsetWithTTL(payloadMap, ttl); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true}
+
 	case "COUNT_PREFIX":
 		if len(req.Args) < 1 {
 			return Response{OK: false, Error: "COUNT_PREFIX requires prefix"}
@@ -643,6 +670,24 @@ func (m *Multiplexer) executeList(req Request) Response {
 		}
 		return Response{OK: true, Data: []json.RawMessage{json.RawMessage(val)}}
 
+	case "LGET":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "LGET requires key"}
+		}
+		key, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse key"}
+		}
+		listBytes, err := eng.Get(key)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		listData := make([]json.RawMessage, len(listBytes))
+		for i, v := range listBytes {
+			listData[i] = json.RawMessage(v)
+		}
+		return Response{OK: true, Data: listData}
+
 	case "DEL":
 		if len(req.Args) < 1 {
 			return Response{OK: false, Error: "DEL requires key"}
@@ -656,6 +701,141 @@ func (m *Multiplexer) executeList(req Request) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true}
+
+	case "COUNT_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.CountByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.CountBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.CountByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+
+	case "FIND_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		listFindMap, err := eng.FindByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		listFindData := make([]json.RawMessage, 0, len(listFindMap)*2)
+		for k, vals := range listFindMap {
+			valsJSON, _ := json.Marshal(vals)
+			listFindData = append(listFindData, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: listFindData}
+	case "FIND_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		listFindMap, err := eng.FindBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		listFindData := make([]json.RawMessage, 0, len(listFindMap)*2)
+		for k, vals := range listFindMap {
+			valsJSON, _ := json.Marshal(vals)
+			listFindData = append(listFindData, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: listFindData}
+	case "FIND_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		listFindMap, err := eng.FindByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		listFindData := make([]json.RawMessage, 0, len(listFindMap)*2)
+		for k, vals := range listFindMap {
+			valsJSON, _ := json.Marshal(vals)
+			listFindData = append(listFindData, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: listFindData}
+
+	case "DEL_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.DeleteByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.DeleteBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.DeleteByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
 	}
 
 	return Response{OK: false, Error: "unknown method"}
@@ -973,6 +1153,185 @@ func (m *Multiplexer) executeSet(req Request) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true, Data: []json.RawMessage{marshalInt64(stored)}}
+
+	case "SINTERCARD":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "SINTERCARD requires at least one key"}
+		}
+		limit := 0
+		keys := make([]string, len(req.Args))
+		// Optional last arg is limit if all but last parse as keys; we always parse all as keys
+		// Convention: args are [key1, key2, ..., limit] where limit is optional integer
+		lastIdx := len(req.Args) - 1
+		if l, err := unmarshalInt(req.Args[lastIdx]); err == nil {
+			// Check if second-to-last is also a valid int (unlikely for a key name)
+			// Use heuristic: if only one arg, treat as key; otherwise last is limit
+			if len(req.Args) > 1 {
+				limit = l
+				for i, arg := range req.Args[:lastIdx] {
+					k, err := unmarshalString(arg)
+					if err != nil {
+						return Response{OK: false, Error: "failed to parse key"}
+					}
+					keys[i] = k
+				}
+				keys = keys[:lastIdx]
+			} else {
+				k, err := unmarshalString(req.Args[0])
+				if err != nil {
+					return Response{OK: false, Error: "failed to parse key"}
+				}
+				keys[0] = k
+			}
+		} else {
+			for i, arg := range req.Args {
+				k, err := unmarshalString(arg)
+				if err != nil {
+					return Response{OK: false, Error: "failed to parse key"}
+				}
+				keys[i] = k
+			}
+		}
+		card, err := eng.SInterCard(keys, limit)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(card)}}
+
+	case "COUNT_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.CountByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.CountBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.CountByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+
+	case "FIND_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		resMap, err := eng.FindByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, vals := range resMap {
+			valsJSON, _ := json.Marshal(vals)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+	case "FIND_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		resMap, err := eng.FindBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, vals := range resMap {
+			valsJSON, _ := json.Marshal(vals)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+	case "FIND_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		resMap, err := eng.FindByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, vals := range resMap {
+			valsJSON, _ := json.Marshal(vals)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+
+	case "DEL_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.DeleteByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.DeleteBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.DeleteByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
 
 	case "DEL":
 		if len(req.Args) < 1 {
@@ -1328,6 +1687,141 @@ func (m *Multiplexer) executeZSet(req Request) Response {
 			data = append(data, json.RawMessage(m.Member), marshalFloat64(m.Score))
 		}
 		return Response{OK: true, Data: data}
+
+	case "COUNT_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.CountByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.CountBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "COUNT_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "COUNT_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.CountByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+
+	case "FIND_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		resMap, err := eng.FindByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, members := range resMap {
+			valsJSON, _ := json.Marshal(members)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+	case "FIND_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		resMap, err := eng.FindBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, members := range resMap {
+			valsJSON, _ := json.Marshal(members)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+	case "FIND_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "FIND_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		resMap, err := eng.FindByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		data := make([]json.RawMessage, 0, len(resMap)*2)
+		for k, members := range resMap {
+			valsJSON, _ := json.Marshal(members)
+			data = append(data, marshalString(k), json.RawMessage(valsJSON))
+		}
+		return Response{OK: true, Data: data}
+
+	case "DEL_PREFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_PREFIX requires prefix"}
+		}
+		pref, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse prefix"}
+		}
+		c, err := eng.DeleteByPrefix(pref)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_SUFFIX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_SUFFIX requires suffix"}
+		}
+		suf, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse suffix"}
+		}
+		c, err := eng.DeleteBySuffix(suf)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
+	case "DEL_REGEX":
+		if len(req.Args) < 1 {
+			return Response{OK: false, Error: "DEL_REGEX requires regex"}
+		}
+		rx, err := unmarshalString(req.Args[0])
+		if err != nil {
+			return Response{OK: false, Error: "failed to parse regex"}
+		}
+		c, err := eng.DeleteByRegex(rx)
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, Data: []json.RawMessage{marshalInt64(c)}}
 
 	case "DEL":
 		if len(req.Args) < 1 {
