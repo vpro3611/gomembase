@@ -22,15 +22,20 @@ type Engine interface {
 	Clear() error
 }
 
+type DelegatedEngine interface {
+	ProcessDelegatedWalEntry(engineID string, action string, args []string) error
+}
+
 type WalLogger interface {
 	Log(engineID string, action string, args ...string) error
 }
 
 type PersistenceManager struct {
-	wal      wal.WalInterface
-	snapshot *snapshot.Snapshot
-	engines  map[string]Engine
-	mutex    sync.Mutex
+	wal            wal.WalInterface
+	snapshot       *snapshot.Snapshot
+	engines        map[string]Engine
+	fallbackEngine DelegatedEngine
+	mutex          sync.Mutex
 }
 
 func NewPersistenceManager(w wal.WalInterface, s *snapshot.Snapshot) *PersistenceManager {
@@ -45,6 +50,12 @@ func (pm *PersistenceManager) RegisterEngine(e Engine) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
 	pm.engines[e.EngineID()] = e
+}
+
+func (pm *PersistenceManager) RegisterFallbackEngine(e DelegatedEngine) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.fallbackEngine = e
 }
 
 func (pm *PersistenceManager) Log(engineID string, action string, args ...string) error {
@@ -77,7 +88,31 @@ func (pm *PersistenceManager) Restore(restoreOnly []string) error {
 		}
 	}
 
-	// 2. Load from WAL later than snapshot
+	// 2. Load from WAL later than snapshot (Two-pass for TX recovery)
+	// Pass 1: Identify incomplete transactions
+	incompleteTxs := make(map[string]bool)
+	activeTxs := make(map[string]bool)
+
+	_ = pm.wal.RecoverFromWal(func(line string) error {
+		parts := strings.Split(line, "|")
+		if len(parts) >= 3 && parts[0] == "tx" {
+			txID := parts[2]
+			if parts[1] == "TX_BEGIN" {
+				activeTxs[txID] = true
+			} else if parts[1] == "TX_COMMIT" {
+				delete(activeTxs, txID)
+			}
+		}
+		return nil
+	})
+
+	for txID := range activeTxs {
+		incompleteTxs[txID] = true
+	}
+
+	// Pass 2: Replay valid entries
+	var currentTxID string
+
 	err := pm.wal.RecoverFromWal(func(line string) error {
 		parts := strings.Split(line, "|")
 		if len(parts) < 2 {
@@ -87,12 +122,28 @@ func (pm *PersistenceManager) Restore(restoreOnly []string) error {
 		action := parts[1]
 		args := parts[2:]
 
+		if engineID == "tx" && len(args) > 0 {
+			if action == "TX_BEGIN" {
+				currentTxID = args[0]
+			} else if action == "TX_COMMIT" {
+				currentTxID = ""
+			}
+			return nil
+		}
+
+		if currentTxID != "" && incompleteTxs[currentTxID] {
+			return nil // Skip incomplete TX entries
+		}
+
 		if len(restoreOnly) > 0 && !slices.Contains(restoreOnly, engineID) {
 			return nil
 		}
 
 		engine, ok := pm.engines[engineID]
 		if !ok {
+			if pm.fallbackEngine != nil {
+				return pm.fallbackEngine.ProcessDelegatedWalEntry(engineID, action, args)
+			}
 			return fmt.Errorf("unregistered engine in WAL: %s", engineID)
 		}
 

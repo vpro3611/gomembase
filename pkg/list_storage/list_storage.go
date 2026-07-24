@@ -44,6 +44,9 @@ type ListStorageInterface interface {
 	Delete(key string) error
 	CleanupExpired()
 
+	SnapshotList(key string) ([][]byte, bool)
+	SnapshotListIndex(key string, index int) ([]byte, bool)
+
 	DeleteByPrefix(prefix string) (int64, error)
 	DeleteBySuffix(suffix string) (int64, error)
 	DeleteByRegex(regex string) (int64, error)
@@ -53,6 +56,8 @@ type ListStorageInterface interface {
 	CountByPrefix(prefix string) (int64, error)
 	CountBySuffix(suffix string) (int64, error)
 	CountByRegex(regex string) (int64, error)
+	KeyCount() int
+	MemoryUsageBytes() int64
 }
 
 type ListStorage struct {
@@ -76,12 +81,88 @@ func (ls *ListStorage) Data() map[string]Value {
 	return ls.data
 }
 
+func (s *ListStorage) KeyCount() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return len(s.data)
+}
+
+func (s *ListStorage) MemoryUsageBytes() int64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var mem int64 = 0
+	for k, v := range s.data {
+		mem += int64(16 + len(k)) // string overhead
+		mem += 40                 // map entry overhead
+		mem += 56                 // list.List struct overhead
+
+		for e := v.value.Front(); e != nil; e = e.Next() {
+			mem += 32 // list.Element struct overhead
+			if b, ok := e.Value.([]byte); ok {
+				mem += int64(24 + cap(b)) // slice overhead
+			}
+		}
+	}
+	return mem
+}
+
 func (ls *ListStorage) Expirations() ListExpirationHeap {
 	return ls.expirations
 }
 
 func (ls *ListStorage) ExpirationMap() map[string]*ListExpirationEntry {
 	return ls.expirationMap
+}
+
+// SnapshotList returns a deep copy of the list elements for undo purposes.
+func (ls *ListStorage) SnapshotList(key string) ([][]byte, bool) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	val, exists := ls.data[key]
+	if !exists || (val.expiresAt != nil && val.expiresAt.Before(time.Now())) {
+		return nil, false
+	}
+
+	elements := make([][]byte, 0, val.value.Len())
+	for e := val.value.Front(); e != nil; e = e.Next() {
+		elements = append(elements, e.Value.([]byte))
+	}
+	return elements, true
+}
+
+// SnapshotListIndex returns an element at a specific index for partial undo (e.g. LSET rollback).
+func (ls *ListStorage) SnapshotListIndex(key string, index int) ([]byte, bool) {
+	ls.mutex.RLock()
+	defer ls.mutex.RUnlock()
+
+	val, exists := ls.data[key]
+	if !exists || (val.expiresAt != nil && val.expiresAt.Before(time.Now())) {
+		return nil, false
+	}
+
+	if index < 0 {
+		index = val.value.Len() + index
+	}
+	if index < 0 || index >= val.value.Len() {
+		return nil, false
+	}
+
+	var e *list.Element
+	if index < val.value.Len()/2 {
+		e = val.value.Front()
+		for i := 0; i < index; i++ {
+			e = e.Next()
+		}
+	} else {
+		e = val.value.Back()
+		for i := val.value.Len() - 1; i > index; i-- {
+			e = e.Prev()
+		}
+	}
+
+	return e.Value.([]byte), true
 }
 
 // EngineID implements persistence.Engine
