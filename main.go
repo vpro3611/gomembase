@@ -35,8 +35,8 @@ type EnvStructParsed struct {
 }
 
 func LoadFromEnv() error {
-	err := godotenv.Load()
-	return err
+	_ = godotenv.Load()
+	return nil
 }
 
 // AssertEnv MUST be called after LoadFromEnv()
@@ -98,8 +98,10 @@ func IdentifyPort() (string, error) {
 	var port string
 	if len(os.Args) > 1 {
 		port = os.Args[1]
+	} else if envPort := os.Getenv("PORT"); envPort != "" {
+		port = envPort
 	} else {
-		return "", fmt.Errorf("failed to retrieve port from os.Args. (%d) : (%s)", len(os.Args), os.Args[1])
+		port = "6381"
 	}
 	formattedPort := fmt.Sprintf(":%s", port)
 	return formattedPort, nil
@@ -115,7 +117,7 @@ func main() {
 	env, errors := AssertEnv()
 	if len(errors) > 0 {
 		for _, err := range errors {
-			log.Printf(err.Error())
+			log.Println(err.Error())
 		}
 		log.Panic("Environment variables are not set correctly\n")
 	}
